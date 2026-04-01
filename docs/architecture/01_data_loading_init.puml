@@ -1,8 +1,8 @@
 @startuml SDXL_Data_Loading_Init
 !theme plain
 skinparam backgroundColor #FEFEFE
-skinparam defaultFontName "Microsoft YaHei"
-skinparam defaultFontSize 11
+skinparam defaultFontName "Noto Sans SC Medium"
+skinparam defaultFontSize 13
 skinparam ArrowThickness 2
 skinparam RoundCorner 8
 skinparam PackageBorderThickness 2

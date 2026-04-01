@@ -1,8 +1,8 @@
 @startuml Flux_Double_Single_Stream
 !theme plain
 skinparam backgroundColor #FEFEFE
-skinparam defaultFontName "Microsoft YaHei"
-skinparam defaultFontSize 11
+skinparam defaultFontName "Noto Sans SC Medium"
+skinparam defaultFontSize 13
 skinparam ArrowThickness 2
 skinparam RoundCorner 8
 skinparam PackageBorderThickness 2
@@ -507,15 +507,15 @@ end note
 ' ============================================================
 ' 第二阶段: Single Stream Blocks (38层)
 ' ============================================================
-package "**第二阶段: Single Stream Blocks × 38**\n//transformer.py:857-977//\nFluxSingleTransformerBlock" as PKG_SINGLE #E8F5E9 {
+package "**第二阶段: Single Stream Blocks**\n**Flux 1:** × **38**层 //transformer.py:857-977// FluxSingleTransformerBlock\n**Flux 2:** × **48**层 //flux2/transformer.py:1116-1197// Flux2SingleTransformerBlock" as PKG_SINGLE #E8F5E9 {
 
-    rectangle "**统一序列输入**\n\nhidden_states: [B, **4608**, 3072]\n前512个token = 文本\n后4096个token = 图像\n\n**但Block不知道也不关心这个区分**\n统一处理所有 token" as SINGLE_INPUT #C8E6C9
+    rectangle "**统一序列输入**\n\n**Flux 1:** [B, **4608**, 3072]  (512文本 + 4096图像)\n**Flux 2:** [B, **1536**, 6144]  (512文本 + 1024图像)\n\n**Block不知道也不关心哪些是文本哪些是图像**\n统一处理所有 token" as SINGLE_INPUT #C8E6C9
 
     rectangle "**Step 1: 条件调制 ★ Single Stream 门控详解**\n\n**Flux 1:** //transformer.py:257//\n  **AdaLayerNormZeroSingle** — 每个block**内部自带**投影\n  //diffusers/models/normalization.py//\n    emb = **Linear**(dim→**3**×dim)( **SiLU**(temb) )\n    shift_msa, scale_msa, **gate_msa** = emb.chunk(**3**, dim=1)\n    x = LayerNorm(x) × (1+scale_msa) + shift_msa\n    return x, gate_msa   // gate: [B, dim]\n  **只有1个gate** (因为Attn+MLP并行后合并投影)\n  gate用法: gate.unsqueeze(1) × proj_out(cat(attn,mlp))\n  **38个block各有独立的 Linear(3072→9216) 权重**\n\n**Flux 2:** //flux2/transformer.py:505-517//\n  **共享 single_stream_modulation** (mod_param_sets=1)\n    (shift, scale, **gate**) = single_stream_modulation(temb)[0]\n    x = (1+scale) × LayerNorm(x) + shift\n  gate用法: hidden_states + **gate** × attn_output\n  **48个single block收到完全相同的gate值!**\n  gate: [B, 1, dim], 无需unsqueeze\n\n**★ 关键差异: gate的作用位置不同!**\n  Flux 1: gate × proj_out(**cat(attn, mlp)**) → 门控整个输出\n  Flux 2: gate × attn_output → 门控的是**已经融合了MLP的**输出\n  (因为Flux2的ParallelSelfAttention内部已融合attn+mlp)" as SINGLE_NORM #A5D6A7
 
-    rectangle "**Step 2: 并行 Attention + MLP ★ Flux1 vs Flux2 差异**\n\n**Flux 1:** //transformer.py:258-272//\n  MLP 分支: mlp_out = GELU(proj_mlp(norm))\n  Attn 分支: attn_out = attn(norm, encoder=**None**)\n  output = **cat([attn_out, mlp_out]**, dim=-1)\n  → proj_out 压缩回工作维度\n  **MLP和Attention在外部并行, 结果拼接**\n\n**Flux 2:** //flux2/transformer.py:476-486//\n  Flux2**ParallelSelf**Attention 内部:\n  QKV投影和MLP投影**融合在同一个线性层**!\n  一次矩阵乘法同时出 Q,K,V + MLP_hidden\n  **并行不是在外部cat, 而是在投影层就融合了**\n  → 更少的内存访问, 更高的GPU利用率\n\n两者都是 encoder_hidden_states=None\n→ 纯 Self-Attention, 4608/1536 tokens互看" as SINGLE_ATTN #81C784
+    rectangle "**Step 2: 并行 Attention + MLP ★ Flux1 vs Flux2 差异**\n\n**Flux 1:** //transformer.py:258-274//\n  两个**独立模块**, 外部并行:\n  MLP 分支: mlp_out = **GELU**(proj_mlp(norm))  // dim→12288\n  Attn 分支: attn_out = Attention(norm, pre_only=True)\n    用通用 diffusers Attention + FluxAttnProcessor2_0\n    qk_norm='rms_norm', encoder=**None** (纯Self-Attn)\n  output = **cat([attn_out, mlp_out]**, dim=-1)\n  → proj_out(**15360**→3072) 压缩回工作维度\n\n**Flux 2:** //flux2/transformer.py:325-378, 395-436//\n  一个**融合模块**: Flux2**ParallelSelfAttention**\n  **输入投影融合:** to_qkv_mlp_proj 一次Linear出:\n    QKV(3×6144=18432) + MLP_in(18432×2=36864)\n    → 一次矩阵乘法, 一次内存读取\n  **中间各自处理:**\n    QKV → unflatten → RMSNorm(可学习γ) → RoPE → Attention\n    MLP_in → **SwiGLU**(SiLU(x1)×x2) → 18432维\n  **输出投影也融合:** to_out(**24576**→6144):\n    cat([attn_out, mlp_out]) → 一次Linear\n    (**和Flux1一样是cat后投影, 融合的是输入端!**)\n\n两者都是 encoder_hidden_states=**None**\n→ 纯 Self-Attention, 4608/1536 tokens 互看" as SINGLE_ATTN #81C784
 
-    rectangle "**Step 3: 投影 + Gate + 残差 ★ Flux1 vs Flux2 差异**\n\n**Flux 1:** //transformer.py:273-275//\n  output = cat([attn_out, mlp_out], dim=2)\n  gate = gate_msa.**unsqueeze(1)**  // [B,dim]→[B,1,dim]\n  hidden_states = **gate** × proj_out(output)\n  hidden_states = **residual + hidden_states**\n  proj_out: [3072+12288=**15360**] → [3072]\n  **gate门控的是 Attn+MLP 合并投影后的整个输出**\n\n**Flux 2:** //flux2/transformer.py:517//\n  attn_output = ParallelSelfAttn(norm_x)  // 内部已融合attn+mlp\n  hidden_states = hidden_states + **mod_gate** × attn_output\n  **gate门控的是已融合attn+mlp的输出**\n  mod_gate: [B,1,dim], 直接乘, 无需unsqueeze\n\n**公式对比:**\n  Flux 1: x = x + gate × W_out(concat(Attn(x̂), MLP(x̂)))\n  Flux 2: x = x + gate × ParallelAttnMLP(x̂)" as SINGLE_POST #66BB6A
+    rectangle "**Step 3: 投影 + Gate + 残差 ★ Flux1 vs Flux2 差异**\n\n**Flux 1:** //transformer.py:272-275//\n  output = cat([attn_out, mlp_out], dim=2)\n  gate = gate_msa.**unsqueeze(1)**  // [B,dim]→[B,1,dim]\n  hidden_states = **gate** × proj_out(output)\n  hidden_states = **residual** + hidden_states\n  proj_out: [3072+12288=**15360**] → [3072], **有bias**\n  + nan_to_num安全处理 + fp16 clip(-65504, 65504)\n\n**Flux 2:** //flux2/transformer.py:517//\n  attn_output = ParallelSelfAttn(norm_x)\n    // 内部: cat([attn,mlp]) → to_out(**24576**→6144, **无bias**)\n  hidden_states = hidden_states + **mod_gate** × attn_output\n  mod_gate: [B,1,dim], 直接乘, 无需unsqueeze\n  + fp16 clip(-65504, 65504), **但无nan_to_num**\n\n**公式完全相同, 实现细节不同:**\n  Flux 1: x = x + gate × W_out(cat(Attn(x̂), MLP(x̂)))\n  Flux 2: x = x + gate × W_out(cat(Attn(x̂), MLP(x̂)))\n  **区别:** gate来源(独立vs共享)、proj有无bias、数值安全处理" as SINGLE_POST #66BB6A
 }
 
 note right of SINGLE_ATTN
@@ -548,21 +548,99 @@ note right of SINGLE_ATTN
   Self-Attention 自动覆盖了所有交互
 end note
 
-note left of SINGLE_INPUT
-  **38层 vs 19层:**
+note left of SINGLE_ATTN
+  ════════════════════════════════════════
+  **★ 并行 Attn+MLP 的完整数学展开**
+  ════════════════════════════════════════
 
-  Single Stream 的层数是 Double 的 2倍
-  因为每层更轻量 (没有两套独立的FFN)
-  但信息融合更深入
+  **一、Flux 1: 外部并行**
+  输入 <latex>\bar{x} \in \mathbb{R}^{B \times L \times 3072}</latex> (LayerNorm后)
+
+  **Attn 分支 (纯自注意力, pre_only=True):**
+  <latex>Q = \bar{x} W_Q,\; K = \bar{x} W_K,\; V = \bar{x} W_V</latex>
+  <latex>y_{\text{attn}} = \text{Softmax}\!\left(\frac{QK^T}{\sqrt{d}}\right) V \in \mathbb{R}^{B \times L \times 3072}</latex>
+
+  **MLP 分支 (同时独立计算):**
+  <latex>y_{\text{mlp}} = \text{GELU}\!\left(\bar{x}\, W_{\text{mlp\_in}} + b\right) \in \mathbb{R}^{B \times L \times 12288}</latex>
+
+  **拼接 + 统一投影:**
+  <latex>y_{\text{cat}} = [y_{\text{attn}} \,\|\, y_{\text{mlp}}] \in \mathbb{R}^{B \times L \times 15360}</latex>
+  <latex>y_{\text{final}} = y_{\text{cat}}\, W_{\text{out}} + b_{\text{out}} \in \mathbb{R}^{B \times L \times 3072}</latex>
+
+  ────────────────────────────────
+  **二、Flux 2: 极致算子融合 (Operator Fusion)**
+  ────────────────────────────────
+  输入 <latex>x \in \mathbb{R}^{B \times L \times 6144}</latex>
+
+  **1. 输入投影融合 (一次矩阵乘法搞定一切):**
+  <latex>Z_{\text{mega}} = x\, W_{\text{fused}}</latex>
+  其中 <latex>W_{\text{fused}} \in \mathbb{R}^{6144 \times 55296}</latex>
+    55296 = QKV(3×6144=18432) + MLP_in(18432×2=36864)
+  **一次 GPU Kernel 启动, 同时算出 Attn 和 MLP 所需的全部特征**
+  <latex>Z_{\text{QKV}},\; Z_{\text{MLP\_in}} = \text{Split}(Z_{\text{mega}})</latex>
+
+  **2a. Attention 路径:**
+  拆解 Q,K,V 后, 先 QK-Norm (稳定超大模型注意力熵):
+  <latex>Q_{\text{norm}} = \text{RMSNorm}(Q) \cdot \gamma_Q</latex>
+  <latex>K_{\text{norm}} = \text{RMSNorm}(K) \cdot \gamma_K</latex>
+  再应用 RoPE 旋转位置编码:
+  <latex>Q_{\text{rope}} = \text{RoPE}(Q_{\text{norm}}),\; K_{\text{rope}} = \text{RoPE}(K_{\text{norm}})</latex>
+  <latex>y_{\text{attn}} = \text{Attention}(Q_{\text{rope}}, K_{\text{rope}}, V) \in \mathbb{R}^{B \times L \times 6144}</latex>
+
+  **2b. MLP 路径 (SwiGLU 的数学展开):**
+  <latex>x_1, x_2 = \text{Chunk}(Z_{\text{MLP\_in}},\, 2)</latex>  各18432维
+  <latex>y_{\text{mlp}} = \text{SiLU}(x_1) \otimes x_2 \in \mathbb{R}^{B \times L \times 18432}</latex>
+
+  **3. 输出投影融合:**
+  <latex>y_{\text{cat}} = [y_{\text{attn}} \,\|\, y_{\text{mlp}}] \in \mathbb{R}^{B \times L \times 24576}</latex>
+  <latex>y_{\text{final}} = y_{\text{cat}}\, W_{\text{out}} \in \mathbb{R}^{B \times L \times 6144}</latex>
+
+  ────────────────────────────────
+  **三、纯 Self-Attention 的深意**
+  ────────────────────────────────
+  encoder_hidden_states = **None**
+  → 没有 Cross-Attention, 只有 Self-Attention
+
+  但输入 x 此时包含**文本+图像**的混合序列
+  当计算 <latex>QK^T</latex> 时, 产生 L×L 的注意力矩阵
+  (例如 4608×4608 或 1536×1536)
+
+  在这个矩阵里:
+  **文本位置 i 与图像位置 j 的内积** <latex>Q_i K_j^T</latex>
+  → 数学上**等价于 Cross-Attention** (图文对齐)
+  **图像位置 i 与图像位置 j 的内积**
+  → 就是空间 Self-Attention
+
+  **结论:** 只要把多模态数据拼在同一序列里,
+  Self-Attention 的 <latex>QK^T</latex> 矩阵**自动包含**
+  了所有可能的模态间交互路由
+  → 无需设计独立的 Cross-Attention 架构
+end note
+
+note left of SINGLE_INPUT
+  **层数配比: Flux 1 vs Flux 2**
+
+  **Flux 1:** Double **19**层 + Single **38**层 = 57层
+    比例 1:2, Single是Double的2倍
+  **Flux 2:** Double **8**层 + Single **48**层 = 56层
+    比例 1:**6**, Single是Double的**6倍!**
+
+  **Flux 2 的激进选择:**
+  大幅削减 Double Stream (19→8)
+  大幅增加 Single Stream (38→48)
+  → 更少的"分开谈判", 更多的"合体干活"
+  → 配合更宽通道(6144), 总参数量相近
 
   **直觉:**
-  Double Stream 19层 = "谈判阶段"
+  Double Stream = "谈判阶段"
     图文各自有立场, 通过会议交换意见
     但会后各自回自己的办公室
-
-  Single Stream 38层 = "协作阶段"
+  Single Stream = "协作阶段"
     图文坐在同一间办公室
     不分你我, 一起干活
+
+  **Flux 2 认为:**
+  8层谈判够了, 剩下的时间全用来协作
 end note
 
 ' ============================================================
@@ -570,7 +648,7 @@ end note
 ' ============================================================
 package "**后处理: 提取图像 token**\n//transformer.py:979-982//" as PKG_POST #E8EAF6 {
 
-    rectangle "**丢弃文本, 只保留图像**\n//L979//\n\nhidden_states = hidden_states[:, **txt_len:**, ...]\n// [B, 4608, 3072] → [B, **4096**, 3072]\n\n前512个文本token: **丢弃**\n后4096个图像token: **保留**\n\n**文本token完成了它的使命:**\n在57层里引导图像生成\n最终我们只需要图像预测\n\nnorm_out + proj_out:\n[B, 4096, 3072] → [B, 4096, **64**]\n压缩回 pack 维度, 准备 unpack" as EXTRACT #C5CAE9
+    rectangle "**丢弃文本, 只保留图像**\n\n**Flux 1:** //transformer.py:979//\nhidden_states = hidden_states[:, txt_len:, ...]\n[B, 4608, 3072] → [B, **4096**, 3072]\n\n**Flux 2:** //flux2/transformer.py:1211//\nhidden_states = hidden_states[:, num_txt_tokens:, ...]\n[B, 1536, 6144] → [B, **1024**, 6144]\n\n**后处理: norm_out + proj_out**\n**Flux 1:** AdaLayerNormContinuous(3072) → Linear(3072→**64**, **bias=True**)\n  [B,4096,3072] → [B,4096,**64**] → unpack → [B,16,128,128]\n**Flux 2:** AdaLayerNormContinuous(6144) → Linear(6144→**128**, **bias=False**)\n  [B,1024,6144] → [B,1024,**128**] → unpack → [B,16,H,W]\n\n**文本token完成了使命: 在56/57层里引导图像生成**\n最终只需要图像预测, 文本丢弃" as EXTRACT #C5CAE9
 }
 
 ' ============================================================
