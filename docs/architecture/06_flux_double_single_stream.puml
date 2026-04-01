@@ -1,0 +1,520 @@
+@startuml Flux_Double_Single_Stream
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontName "Microsoft YaHei"
+skinparam defaultFontSize 11
+skinparam ArrowThickness 2
+skinparam RoundCorner 8
+skinparam PackageBorderThickness 2
+skinparam NoteBackgroundColor #FFFFDD
+skinparam NoteBorderColor #999999
+
+title **Flux Transformer 核心: Double Stream → Single Stream**\n以 Flux 1 代码为主线展开, Flux 2 差异全标注\nFlux 1: flux/transformer.py | Flux 2: flux2/transformer.py
+
+' ============================================================
+' 前置: 输入预处理
+' ============================================================
+package "**前置: 输入预处理**\n//transformer.py:677-711//" as PKG_PRE #E8EAF6 {
+
+    rectangle "**x_embedder: 线性投影**\n//L677//\n\nhidden_states = self.x_embedder(hidden_states)\n\n**Flux 1:** [B, 4096, 64] → [B, 4096, **3072**]\n  3072 = 24 heads × 128 head_dim\n\n**Flux 2:** [B, 1024, 512] → [B, 1024, **6144**]\n  6144 = 48 heads × 128 head_dim" as X_EMBED #C5CAE9
+
+    rectangle "**context_embedder: 文本投影**\n//L701//\n\n**Flux 1:** T5嵌入 [B, 512, 4096] → [B, 512, **3072**]\n**Flux 2:** Mistral多层嵌入 [B, 512, 15360] → [B, 512, **6144**]\n\n投影到和图像 token **同一维度**\n这样才能做 Joint Attention\n\n**Flux 2 的 15360 = 5120 × 3层**\nMistral 第10/20/30层特征拼接" as CTX_EMBED #9FA8DA
+
+    rectangle "**temb: 条件嵌入向量 ★ 详解**\n\n**Flux 1:** //transformer.py:694-698//\n  CombinedTimestepGuidanceTextProjEmbeddings\n  temb = time_text_embed(\n      timestep × 1000,\n      guidance × 1000,\n      pooled_projections  // CLIP-L pooled [768]\n  )\n  **内部计算:**\n    t_emb = Sinusoidal(timestep) → MLP → [3072]\n    g_emb = Sinusoidal(guidance) → MLP → [3072]\n    p_emb = SiLU(Linear(pooled)) → Linear → [3072]\n    temb = t_emb + g_emb + p_emb\n  **三个信号相加成一个 [B, 3072] 向量**\n\n**Flux 2:** //flux2/transformer.py:960//\n  Flux2TimestepGuidanceEmbeddings\n  temb = time_guidance_embed(timestep, guidance)\n  **只有时间步+guidance, 没有pooled文本!**\n    t_emb = Sinusoidal(timestep) → MLP → [6144]\n    g_emb = Sinusoidal(guidance) → MLP → [6144]\n    temb = t_emb + g_emb\n  **Flux 2 不把CLIP pooled混入temb**\n  (因为根本没有CLIP, 只有Mistral)" as TEMB #7986CB
+
+note right of TEMB
+  **temb 到底是什么? 为什么重要?**
+
+  temb = **T**imestep **EMB**edding 的缩写
+  它是一个浓缩了"当前去噪状态"的向量
+
+  **它回答的问题:**
+  "现在噪声有多大?" (timestep)
+  "生成要多严格?" (guidance)
+  "整体要画什么?" (pooled text, Flux1 only)
+
+  **它怎么影响每一层:**
+  temb → Linear → 6个参数:
+    shift_msa, scale_msa, **gate_msa**
+    shift_mlp, scale_mlp, **gate_mlp**
+
+  shift/scale: 调整LayerNorm的输出分布
+    norm_out = (1 + scale) × norm(x) + shift
+    "这一层应该关注什么范围的特征"
+
+  **gate: 控制这一层输出的强度** [0, +∞)
+    gate≈0 → 跳过这一层 (输出被消除)
+    gate≈1 → 正常贡献
+    gate>1 → 放大贡献
+
+  **gate让模型自己学会:**
+  - 高噪声步: 某些层的gate大 (需要大幅去噪)
+  - 低噪声步: 那些层的gate小 (精修阶段不需要)
+  - 不同guidance: 调整哪些层更活跃
+end note
+
+    rectangle "**RoPE: 旋转位置编码 ★ 详解**\n//L709-711//\n\nids = cat(txt_ids, img_ids)  // [4608, 3]\nimage_rotary_emb = pos_embed(ids)\n\n**Step 1: 构建位置ID**\n//transformer.py:1010-1026//\n\n  txt_ids = zeros(512, 3)  // 文本: 全零, 没有空间位置\n  img_ids = zeros(H/2, W/2, 3):\n    img_ids[..., 0] = 0           // 第0维: 预留(Flux1恒为0)\n    img_ids[..., 1] = arange(H/2) // 第1维: **y坐标** (行号)\n    img_ids[..., 2] = arange(W/2) // 第2维: **x坐标** (列号)\n  → reshape为 [4096, 3]\n\n**Step 2: 对每个维度独立生成旋转频率**\n//FluxPosEmbed.forward() — diffusers/embeddings.py:1245//\n\n  for i in range(3):  // 3个轴\n    cos_i, sin_i = get_1d_rotary_pos_embed(\n      dim=axes_dim[i],  // Flux1: (16, 56, 56)\n      pos=ids[:, i],     // 该轴的坐标值\n      theta=10000\n    )\n  freqs_cos = cat([cos_0, cos_1, cos_2])  // [4608, 128]\n  freqs_sin = cat([sin_0, sin_1, sin_2])  // [4608, 128]\n\n**Step 3: 在Attention中旋转Q和K**\n//FluxAttnProcessor2_0, L150-151//\n\n  Q = apply_rotary_emb(Q, (freqs_cos, freqs_sin))\n  K = apply_rotary_emb(K, (freqs_cos, freqs_sin))" as ROPE #5C6BC0
+
+note right of ROPE
+  **RoPE 核心原理: 用旋转编码相对位置**
+
+  **1D RoPE (LLM文本):**
+  给位置 m 的token, 将Q/K向量的
+  每对相邻元素 (q_{2i}, q_{2i+1}) 视为复数,
+  乘以旋转因子 e^{i·m·theta_i}:
+
+    q' = q × cos(m·θ) + rotate(q) × sin(m·θ)
+
+  θ_i = 1 / 10000^(2i/d)
+  **低频维度变化慢(捕捉远距离), 高频维度变化快(捕捉近距离)**
+
+  关键性质: Q_m · K_n 只依赖于 **m-n** (相对距离)
+  → 位置信息自动编码进注意力分数中
+
+  **2D RoPE (Flux图像):**
+  图像token有 (y, x) 两个坐标
+  **把head_dim切成几段, 每段编码一个轴:**
+
+  Flux 1: head_dim=128, axes_dim=(16, 56, 56)
+    Q[..., 0:16]   → 用 pos[:,0]=0 旋转 (预留维度)
+    Q[..., 16:72]  → 用 pos[:,1]=**y坐标** 旋转
+    Q[..., 72:128] → 用 pos[:,2]=**x坐标** 旋转
+
+  这样 Q_img(y1,x1) · K_img(y2,x2) 的注意力分数
+  自动编码了 **Δy = y1-y2** 和 **Δx = x1-x2**
+  → 模型天然感知二维空间的相对位置
+
+  **Flux 2: axes_dim=(32, 32, 32, 32) — 4维 (T, H, W, L)!**
+  //pipeline.py:943-991//
+  4维是 **(时间T, 高度H, 宽度W, 序列索引L)**:
+
+  **纯T2I — 图像token的ids:**
+    _prepare_latent_ids(): cartesian_prod(t=0, h=arange(H), w=arange(W), lat=0)
+    → (T=0, H=y坐标, W=x坐标, **L=0**)
+    图像token: 空间位置靠H,W编码, T和L恒为0
+
+  **纯T2I — 文本token的ids: ★ Flux 2 重大变化!**
+    _prepare_text_ids(): cartesian_prod(t=0, h=0, w=0, lat=arange(L))
+    → (T=0, H=0, W=0, **L=序列位置 0,1,2,...,511**)
+    **文本不再全零!** 第4维编码了文本token的顺序
+
+  **Flux 1 vs Flux 2 文本位置编码对比:**
+  Flux 1: txt_ids = zeros → RoPE对文本完全不起作用
+    文本顺序完全靠T5自带的位置编码
+  Flux 2: txt_ids 在L维有序号 → RoPE也编码文本顺序
+    Attention层额外获得一层文本顺序信息
+    → **Joint Attention中图文对齐更精确**
+
+  **★ T维的真正用途: 区分多张参考图 (不是视频帧!)**
+  //pipeline.py:994-1041, __init__.py:195-203//
+
+  纯T2I: T=0, 不起作用
+  **图像编辑/多参考图场景:** _prepare_image_ids()
+    第1张参考图: T = scale + scale×0 = **10**
+    第2张参考图: T = scale + scale×1 = **20**
+    第3张参考图: T = scale + scale×2 = **30**
+    代码注释: "T-coordinate: scale + scale * ref_idx
+               (to distinguish reference images)"
+
+  → 同一张参考图内: ΔT=0, RoPE在T维不区分
+  → 不同参考图之间: ΔT≠0, RoPE自动编码"来自不同图"
+  → **用位置编码而非额外标记来区分多图身份**
+
+  Q[..., 0:32]   → T维旋转 (**多图身份区分**, 纯T2I时=0)
+  Q[..., 32:64]  → H维旋转 (**y坐标**)
+  Q[..., 64:96]  → W维旋转 (**x坐标**)
+  Q[..., 96:128] → L维旋转 (**序列索引**)
+
+  **⚠️ theta差异:**
+  Flux 1: theta=**10000** (和LLM标准一致)
+  Flux 2: theta=**2000** (更小 → 频率更高 → 衰减更快)
+  → Flux 2对**近距离位置差异更敏感**
+    远距离token的位置区分度降低
+    配合更宽的通道(6144)补偿表达力
+
+  **⚠️ RoPE计算流程差异:**
+  Flux 1: ids = cat(txt_ids, img_ids) → **一起**过pos_embed
+  Flux 2: image_rope = pos_embed(**img_ids**)
+          text_rope  = pos_embed(**txt_ids**)
+          concat = cat(text_rope, image_rope)
+          → **分别**计算后拼接
+
+  **3D RoPE (视频模型, 如HunyuanVideo):**
+  视频token有 (t, y, x) 三个坐标
+  axes_dim=(16, 56, 56):
+    Q[..., 0:16]   → 用 **帧号t** 旋转
+    Q[..., 16:72]  → 用 **y坐标** 旋转
+    Q[..., 72:128] → 用 **x坐标** 旋转
+
+  Q_vid(t1,y1,x1) · K_vid(t2,y2,x2)
+  自动编码 **Δt, Δy, Δx** 三个方向的相对位置
+  → 时空注意力天然感知"多远的帧+多远的位置"
+
+  **Flux 1 文本ids为什么全零?**
+  txt_ids = zeros(512, 3)
+  → 所有文本token的位置 = (0, 0, 0)
+  → 文本之间: Δ=0, RoPE不影响 (cos(0)=1, sin(0)=0)
+  → 文本和图像之间: 只有图像侧的坐标起作用
+  → **文本没有空间位置, 这是正确的!**
+  → 文本的顺序关系靠T5自带的位置编码
+
+  **vs 绝对位置编码 (SDXL的Sinusoidal):**
+  绝对: pos_embed[m] 加到token上, 位置是全局的
+    → 训练1024, 推理2048 = 没见过的位置 = 崩溃
+  旋转: 编码的是**相对距离**, 不是绝对位置
+    → 训练1024, 推理2048 = 相对距离仍有意义
+    → **天然支持可变分辨率!**
+    这就是Flux能灵活切换分辨率的数学基础
+end note
+}
+
+' ============================================================
+' 第一阶段: Double Stream Blocks (19层)
+' ============================================================
+package "**第一阶段: Double Stream Blocks × 19**\n//transformer.py:753-850//\nFluxTransformerBlock" as PKG_DOUBLE #FCE4EC {
+
+    rectangle "**两条独立的流, 各自有独立的 Norm 和 FFN**\n//transformer.py:302-304, 324-328//\n\n**图像流:**\n  norm1        → AdaLayerNormZero(dim)\n  norm2 + ff   → LayerNorm + FeedForward\n\n**文本流:**\n  norm1_context → AdaLayerNormZero(dim)\n  norm2_context + ff_context → LayerNorm + FeedForward\n\n**但共享同一个 Attention 模块!**\n  self.attn → 一个 Attention 实例\n  内部有两套投影: to_q/k/v + add_q/k/v_proj" as DOUBLE_INIT #F8BBD0
+
+    rectangle "**Step 1: 条件调制 ★ Flux1 vs Flux2 关键差异**\n\n**Flux 1:** //transformer.py:342-346//\n  **AdaLayerNormZero** — 每个block**内部自带**temb投影\n  norm_img, gate_msa, shift, scale, gate_mlp\n      = norm1(hidden_states, emb=**temb**)\n  每个block有独立的norm1权重\n  → 每层可以**独立学习**怎么响应temb\n\n**Flux 2:** //flux2/transformer.py:574-576//\n  **普通LayerNorm + 外部共享调制**\n  (shift, scale, gate) = **double_stream_modulation_img**(temb)\n  norm_img = LayerNorm(hidden_states)\n  norm_img = (1 + scale) × norm_img + shift\n  所有double block **共享同一组**调制权重!\n  → 参数更少, 但所有层响应temb的方式相同" as DOUBLE_NORM #F48FB1
+
+    rectangle "**Step 2: Joint Attention ★ 灵魂所在**\n//transformer.py:355-360//\n→ FluxAttnProcessor2_0\n//transformer.py:95-190//\n\nattn_output, context_attn_output = self.attn(\n    hidden_states = norm_img,\n    encoder_hidden_states = norm_txt,\n    image_rotary_emb = rope,\n)\n\n**展开见右侧详解 →**" as DOUBLE_ATTN #EC407A
+
+    rectangle "**Step 3: 图像流后处理 — 门控 + FFN + 残差流**\n//transformer.py:367-378//\n\n**── 第一次残差: Attention ──**\nattn_output = **gate_msa** × attn_output  // 门控缩放\nhidden_states = hidden_states **+** attn_output  // 残差连接\n\n**── FFN (FeedForward) ──**\nnorm_img = LayerNorm(hidden_states)\nnorm_img = norm_img × (1 + **scale_mlp**) + **shift_mlp**  // temb调制\nff_output = **FeedForward**(norm_img):\n  Linear(3072 → **12288**)  // 4倍升维\n  + GELU(approximate=\"tanh\")  // 非线性激活\n  + Linear(**12288** → 3072)  // 降回原维\n\n**── 第二次残差: FFN ──**\nff_output = **gate_mlp** × ff_output  // 门控缩放\nhidden_states = hidden_states **+** ff_output  // 残差连接" as DOUBLE_IMG_POST #E91E63
+
+note right of DOUBLE_IMG_POST
+  **残差流: 贯穿57层的主线**
+
+  hidden_states ═══════════════════════
+       │                              ↑
+       ↓                              │
+    [Attention]                       │
+       │                              │
+       ↓                              │
+    × gate_msa ──────(+)──────────────┘ 第一次残差
+       │
+  hidden_states ═══════════════════════
+       │                              ↑
+       ↓                              │
+    [FFN: 3072→12288→3072]            │
+       │                              │
+       ↓                              │
+    × gate_mlp ──────(+)──────────────┘ 第二次残差
+       │
+  hidden_states ═══════ → 下一层
+
+  **"═══" 就是残差流**
+  Attention和FFN只提供修正量δ
+  gate控制δ的大小
+  δ加到主线上, 主线永远不断
+
+  **FFN 的升维→降维:**
+  3072维: 信息"太窄", 非线性不充分
+  升到12288: 给GELU足够的空间变换
+  降回3072: 和残差流对齐
+
+  **Flux 2 FFN 差异:**
+  mlp_ratio=**3.0** (不是4.0)
+  6144 → **18432** → 6144
+  + 用 **SwiGLU** (不是GELU)
+  SwiGLU = SiLU门控, 效果更好
+end note
+
+    rectangle "**Step 4: 文本流后处理 (对称结构)**\n//transformer.py:381-388//\n\ncontext_attn = **c_gate_msa** × context_attn_output\nencoder_hidden_states += context_attn  // 残差\n\nnorm_txt = norm2_context(encoder_hidden_states)\nnorm_txt = norm_txt × (1+c_scale) + c_shift\ncontext_ff = ff_context(norm_txt)\nencoder_hidden_states += **c_gate_mlp** × context_ff\n\n**文本表示被图像信息更新了!**\n这是和 SDXL Cross-Attention 的本质区别" as DOUBLE_TXT_POST #C62828
+
+    rectangle "**return encoder_hidden_states, hidden_states**\n//transformer.py:394//\n\n两条流各自更新, 各自返回\n进入下一个 Double Block 继续处理" as DOUBLE_RETURN #B71C1C
+}
+
+note left of DOUBLE_NORM
+  **架构迭代: 调制方式的权衡**
+
+  **Flux 1 的选择: 每层独立调制**
+    AdaLayerNormZero 内置 temb→参数 的投影
+    19个double block = 19组独立的调制权重
+    **优点:** 每层可以学到不同的调制策略
+      浅层: temb影响大(决定全局结构)
+      深层: temb影响小(专注细节)
+    **代价:** 参数量更大
+
+  **Flux 2 的选择: 全局共享调制**
+    一个共享的 Flux2Modulation 模块
+    生成所有层的 (shift, scale, gate)
+    **优点:** 参数大幅减少
+      模型更宽(6144)但调制更轻
+    **代价:** 所有层对temb的响应模式相同
+      靠更宽的隐藏层来补偿表达力
+
+  **设计哲学的转变:**
+  Flux 1: "每层精细控制" → 深度优先
+  Flux 2: "统一控制+更宽通道" → 宽度优先
+  这反映了 Scaling Law 的工程实践:
+  **加宽比加深更容易并行, 训练更稳定**
+end note
+
+note right of DOUBLE_ATTN
+  **FluxAttnProcessor2_0 内部 ★**
+  //transformer.py:106-190//
+
+  **1. 图像流 QKV 生成:**
+  Q_img = to_q(norm_img)    // [B, heads, 4096, 128]
+  K_img = to_k(norm_img)
+  V_img = to_v(norm_img)
+
+  **2. 文本流 QKV 生成 (独立投影!):**
+  Q_txt = **add_q_proj**(norm_txt)  // [B, heads, 512, 128]
+  K_txt = **add_k_proj**(norm_txt)
+  V_txt = **add_v_proj**(norm_txt)
+
+  **注意:** 图像用 to_q/k/v
+  文本用 **add_q/k/v_proj** ← 独立的权重矩阵!
+
+  **3. 拼接 ★ ★ ★**
+  //L145-147//
+  Q = cat(**[Q_txt, Q_img]**, dim=seq)  // [B, h, **4608**, 128]
+  K = cat(**[K_txt, K_img]**, dim=seq)
+  V = cat(**[V_txt, V_img]**, dim=seq)
+
+  **文本在前, 图像在后!**
+
+  **4. 应用 RoPE:**
+  //L150-151//
+  Q = apply_rotary_emb(Q, rope)
+  K = apply_rotary_emb(K, rope)
+
+  **5. Scaled Dot-Product Attention:**
+  //L166-173//
+  output = F.scaled_dot_product_attention(Q, K, V)
+  // → [B, heads, **4608**, 128]
+
+  **4608 = 512(文本) + 4096(图像)**
+  每个token都能看到所有其他token!
+  图像看图像 + 图像看文本
+  文本看文本 + **文本看图像** ← 关键!
+
+  **6. 拆分回两条流:**
+  //L178-179//
+  txt_out = output[:, **:512**, :]   // 文本部分
+  img_out = output[:, **512:**, :]   // 图像部分
+
+  **7. 各自输出投影:**
+  img_out = to_out(img_out)      // 图像用 to_out
+  txt_out = **to_add_out**(txt_out)  // 文本用 add_out
+
+  return img_out, txt_out
+
+  ----
+  **Flux 2 的实现差异:**
+  //flux2/transformer.py:165-239//
+
+  **类名:** Flux2AttnProcessor (非 FluxAttnProcessor2_0)
+  **QK Norm:** 独立的 norm_q/norm_k 模块
+    (Flux 1 用 attn 内置的 rms_norm)
+  **Attention后端:** dispatch_attention_fn()
+    可切换 SDPA / FlashAttention / 其他后端
+    (Flux 1 硬编码 F.scaled_dot_product_attention)
+  **RoPE维度:**
+    Flux 1: axes_dims = (16, 56, 56) → 3维
+    Flux 2: axes_dims = (32, 32, 32, 32) → 4维
+    Flux 2 更均匀的维度分配
+
+  **核心流程完全一致:**
+  拼接QKV → RoPE → SDPA → 拆分 → 各自投影
+end note
+
+note left of DOUBLE_TXT_POST
+  **这里是 Flux 和 SDXL 的本质区别:**
+
+  **SDXL Cross-Attention:**
+  文本嵌入是**冻结的输入**
+  经过所有 UNet 层后
+  文本嵌入**没有变化**
+  信息单向流动: 文本→图像
+
+  **Flux Double Stream:**
+  文本嵌入会被**图像信息更新**
+  每经过一层, 文本表示都在变化
+  信息**双向流动**: 文本↔图像
+
+  **意义:**
+  "a red car next to a blue house"
+  第1层: "red"token还不知道car长什么样
+  第5层: "red"token的表示已经融入了
+         这张具体图片里car的视觉特征
+  第19层: "red car"的文本表示已经完全
+          和图片中实际的红色汽车对齐了
+
+  **这就是Flux文本-图像对齐更精准的原因**
+end note
+
+' ============================================================
+' 过渡: 拼接
+' ============================================================
+rectangle "**══ 过渡: 两流合并 ══**\n//transformer.py:854//\n\nhidden_states = **cat([txt, img]**, dim=1)\n\n**Flux 1:** [B, 512, 3072] + [B, 4096, 3072] → [B, **4608**, 3072]\n**Flux 2:** [B, 512, 6144] + [B, 1024, 6144] → [B, **1536**, 6144]\n\n**从此刻起, 图像和文本不再区分**\n变成一个统一的序列" as MERGE #FF6F00
+
+note right of MERGE
+  **为什么在这里合并?**
+
+  Double Stream 的 19 层已经完成了:
+  - 图像建立了自身的空间表征
+  - 文本建立了自身的语义表征
+  - 两者通过 Joint Attention 充分交换了信息
+
+  此时文本和图像的表示已经
+  在**同一个语义空间**里了
+  (都是 3072 维, 且经过 19 层对齐)
+
+  **合并后可以做更深度的融合:**
+  Single Stream 不再区分谁是图像谁是文本
+  统一当做 4608 个 token 处理
+end note
+
+' ============================================================
+' 第二阶段: Single Stream Blocks (38层)
+' ============================================================
+package "**第二阶段: Single Stream Blocks × 38**\n//transformer.py:857-977//\nFluxSingleTransformerBlock" as PKG_SINGLE #E8F5E9 {
+
+    rectangle "**统一序列输入**\n\nhidden_states: [B, **4608**, 3072]\n前512个token = 文本\n后4096个token = 图像\n\n**但Block不知道也不关心这个区分**\n统一处理所有 token" as SINGLE_INPUT #C8E6C9
+
+    rectangle "**Step 1: AdaLayerNormSingle**\n//transformer.py:257//\n\nnorm_states, gate = norm(hidden_states, emb=temb)\n\n**只有1个norm, 不分图像/文本**\n**只有1个gate, 不分图像/文本**\n比 Double Stream 简洁得多" as SINGLE_NORM #A5D6A7
+
+    rectangle "**Step 2: 并行 Attention + MLP ★ Flux1 vs Flux2 差异**\n\n**Flux 1:** //transformer.py:258-272//\n  MLP 分支: mlp_out = GELU(proj_mlp(norm))\n  Attn 分支: attn_out = attn(norm, encoder=**None**)\n  output = **cat([attn_out, mlp_out]**, dim=-1)\n  → proj_out 压缩回工作维度\n  **MLP和Attention在外部并行, 结果拼接**\n\n**Flux 2:** //flux2/transformer.py:476-486//\n  Flux2**ParallelSelf**Attention 内部:\n  QKV投影和MLP投影**融合在同一个线性层**!\n  一次矩阵乘法同时出 Q,K,V + MLP_hidden\n  **并行不是在外部cat, 而是在投影层就融合了**\n  → 更少的内存访问, 更高的GPU利用率\n\n两者都是 encoder_hidden_states=None\n→ 纯 Self-Attention, 4608/1536 tokens互看" as SINGLE_ATTN #81C784
+
+    rectangle "**Step 3: 投影 + Gate + 残差**\n//transformer.py:273-275//\n\nhidden_states = gate × proj_out(output)\nhidden_states = residual + hidden_states\n\nproj_out: [3072+12288] → [3072]\n**把拼接的 Attn+MLP 压缩回工作维度**\n\ngate 控制这一层的贡献强度\n残差连接保底" as SINGLE_POST #66BB6A
+}
+
+note right of SINGLE_ATTN
+  **Single Stream 的关键设计:**
+
+  **1. Attention + MLP 是并行的, 不是串行!**
+
+  Double Stream: Attention → 残差 → MLP → 残差
+  Single Stream: Attention 和 MLP **同时算**
+                 结果 cat 后一起投影
+
+  **为什么?** 并行计算更快
+  GPU 可以同时执行两个分支
+  最后 cat + proj_out = 隐式的融合
+
+  **2. 没有 Cross-Attention!**
+
+  encoder_hidden_states = None
+  → 只做 Self-Attention
+  → 4608 个 token 互相看
+
+  但前 512 个 token 是文本!
+  所以 Self-Attention 自然包含了:
+  - 图像看图像 (空间关系)
+  - 文本看文本 (语义连贯)
+  - **图像看文本** (内容生成)
+  - **文本看图像** (上下文对齐)
+
+  **合并后不需要Cross-Attention**
+  Self-Attention 自动覆盖了所有交互
+end note
+
+note left of SINGLE_INPUT
+  **38层 vs 19层:**
+
+  Single Stream 的层数是 Double 的 2倍
+  因为每层更轻量 (没有两套独立的FFN)
+  但信息融合更深入
+
+  **直觉:**
+  Double Stream 19层 = "谈判阶段"
+    图文各自有立场, 通过会议交换意见
+    但会后各自回自己的办公室
+
+  Single Stream 38层 = "协作阶段"
+    图文坐在同一间办公室
+    不分你我, 一起干活
+end note
+
+' ============================================================
+' 后处理: 提取图像token
+' ============================================================
+package "**后处理: 提取图像 token**\n//transformer.py:979-982//" as PKG_POST #E8EAF6 {
+
+    rectangle "**丢弃文本, 只保留图像**\n//L979//\n\nhidden_states = hidden_states[:, **txt_len:**, ...]\n// [B, 4608, 3072] → [B, **4096**, 3072]\n\n前512个文本token: **丢弃**\n后4096个图像token: **保留**\n\n**文本token完成了它的使命:**\n在57层里引导图像生成\n最终我们只需要图像预测\n\nnorm_out + proj_out:\n[B, 4096, 3072] → [B, 4096, **64**]\n压缩回 pack 维度, 准备 unpack" as EXTRACT #C5CAE9
+}
+
+' ============================================================
+' 连接线
+' ============================================================
+X_EMBED -right-> CTX_EMBED
+CTX_EMBED -right-> TEMB
+TEMB -right-> ROPE
+
+X_EMBED -down-> DOUBLE_INIT : "img: [B,4096,3072]"
+CTX_EMBED -down-> DOUBLE_INIT : "txt: [B,512,3072]"
+
+DOUBLE_INIT -down-> DOUBLE_NORM
+DOUBLE_NORM -down-> DOUBLE_ATTN : "norm_img + norm_txt"
+DOUBLE_ATTN -down-> DOUBLE_IMG_POST : "img_attn_out"
+DOUBLE_ATTN -down-> DOUBLE_TXT_POST : "txt_attn_out"
+DOUBLE_IMG_POST -down-> DOUBLE_RETURN
+DOUBLE_TXT_POST -down-> DOUBLE_RETURN
+
+DOUBLE_RETURN -down-> MERGE : "×19层循环后"
+
+MERGE -down-> SINGLE_INPUT : "[B, 4608, 3072]"
+
+SINGLE_INPUT -down-> SINGLE_NORM
+SINGLE_NORM -down-> SINGLE_ATTN
+SINGLE_ATTN -down-> SINGLE_POST
+
+SINGLE_POST -down-> EXTRACT : "×38层循环后"
+
+' ============================================================
+' 底部总结
+' ============================================================
+note bottom of EXTRACT
+  **Flux Transformer 完整数据流总结:**
+
+  **输入预处理:**
+  img [B,4096,64] → x_embedder → [B,4096,3072]
+  txt [B,512,4096] → ctx_embedder → [B,512,3072]
+  temb = timestep + guidance + CLIP-L pooled → [B,3072]
+  rope = pos_embed(cat(txt_ids, img_ids))
+
+  **Double Stream × 19层:**
+  img 和 txt **分开存储, 共享 Attention**
+  每层: AdaNorm → Joint Attention → 各自FFN → 各自残差
+  Joint Attention: cat(Q_txt,Q_img) × cat(K_txt,K_img)^T × cat(V_txt,V_img)
+  → 图文双向交互, 但各自保持独立的表示空间
+
+  **合并: cat(txt, img) → [B, 4608, 3072]**
+
+  **Single Stream × 38层:**
+  统一序列, **不区分图文**
+  每层: AdaNorm → Self-Attention(4608 tokens) **并行** MLP → cat → proj → 残差
+  → 图文完全融合, 更深度的信息交换
+
+  **提取: 丢弃文本token, 保留图像token**
+  [B,4096,3072] → norm → proj → [B,4096,64] → unpack → [B,16,128,128]
+
+  **Flux 1 vs Flux 2 实现差异总结:**
+
+  | | Flux 1 | Flux 2 |
+  |---|---|---|
+  | Double Block类 | FluxTransformerBlock | **Flux2TransformerBlock** |
+  | Single Block类 | FluxSingleTransformerBlock | **Flux2SingleTransformerBlock** |
+  | Attention类 | FluxAttnProcessor2_0 | **Flux2AttnProcessor** |
+  | 调制方式 | AdaLayerNormZero (每层独立) | **共享Modulation** (全层相同) |
+  | QK Norm | rms_norm (attn内置) | **独立norm模块** |
+  | Attention后端 | 硬编码 SDPA | **dispatch_attention_fn** (可切换) |
+  | Single MLP融合 | 外部cat拼接 | **投影层内部融合** |
+  | RoPE维度 | (16,56,56) 3维: 预留+Y+X | **(32,32,32,32) 4维: T+H+W+L(序列索引)** |
+  | RoPE theta | 10000 (标准) | **2000** (更高频, 近距离敏感) |
+  | RoPE文本ids | 全零(RoPE不影响文本) | **L维有序号(RoPE编码文本顺序)** |
+  | RoPE计算 | cat(ids)后一起算 | **图文分别算再cat** |
+  | inner_dim | 3072 | **6144** |
+
+  **核心思想完全一致, 但工程实现全部重写**
+  Flux 2 的每一处改动都指向同一个方向:
+  **更宽的通道 + 更高效的计算 + 更少的冗余参数**
+
+  **LoRA 插入点 (两者相同):**
+  Double Stream: to_q/k/v (图像) + add_q/k/v_proj (文本) + to_out + to_add_out
+  Single Stream: to_q/k/v + to_out (图文统一)
+end note
+
+@enduml

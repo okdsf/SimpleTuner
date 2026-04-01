@@ -1,0 +1,321 @@
+@startuml SDXL_Data_Loading_Init
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontName "Microsoft YaHei"
+skinparam defaultFontSize 11
+skinparam ArrowThickness 2
+skinparam RoundCorner 8
+skinparam PackageBorderThickness 2
+skinparam NoteBackgroundColor #FFFFDD
+skinparam NoteBorderColor #999999
+
+title **SimpleTuner SDXL 数据加载链路 — 初始化阶段 (v3 完整溯源版)**\n从用户配置 → 图片文件夹 → DataLoader 就绪
+
+' ============================================================
+' 第零层: 用户输入 — 数据的源头
+' ============================================================
+package "**第零层: 用户输入 (训练之前)**" as PKG_USER #F5F5F5 {
+
+    rectangle "**你的图片文件夹**\n\n/data/my_pictures/\n  ├── 001.jpg\n  ├── 002.png\n  ├── 003.webp\n  └── ..." as USER_IMAGES #FFFFFF
+
+    rectangle "**configure.py (TUI向导)**\n//configure.py:2691//\n\n终端交互式配置工具 (curses TUI)\n引导你填写:\n  - 模型类型 (SDXL/Flux/SD3...)\n  - 图片文件夹路径\n  - 分辨率、caption策略\n  - 缓存路径等\n\n**输出:** 生成 JSON 配置文件" as CONFIGURE_PY #E0E0E0
+
+    rectangle "**multidatabackend.json**\n//config/multidatabackend.json//\n\n用户手写 或 configure.py 生成:\n[\n  {\n    \"id\": \"my_dataset\",\n    \"type\": \"local\",\n    \"instance_data_dir\": \"/data/my_pictures\",\n    \"resolution\": 1024,\n    \"caption_strategy\": \"filename\"\n  },\n  {\n    \"id\": \"text_cache\",\n    \"dataset_type\": \"text_embeds\",\n    \"type\": \"local\",\n    \"cache_dir\": \"/cache/text\",\n    \"default\": true\n  }\n]" as JSON_CONFIG #FFF9C4
+}
+
+note right of CONFIGURE_PY
+  **这不是训练流程的一部分!**
+
+  它是训练**之前**的准备工具。
+  类比 Kohya GUI 帮你填参数的界面,
+  只不过输出的不是命令行参数,
+  而是 JSON 配置文件。
+
+  你也可以完全不用它,
+  直接手写 JSON 文件。
+end note
+
+note right of JSON_CONFIG
+  **Kohya vs SimpleTuner 的配置哲学:**
+
+  Kohya: **约定优于配置**
+    文件夹名 = 配置
+    10_sks dog/ → repeat=10, prompt="sks dog"
+
+  SimpleTuner: **配置优于约定**
+    一切显式写在 JSON 里
+    灵活但需要手动/向导生成
+
+  这个 JSON 就是后续 for 循环
+  遍历的 data_backend_config
+end note
+
+' ============================================================
+' 第一层: Trainer 入口
+' ============================================================
+package "**Trainer (上帝类 6988行)**\ntrainer.py" as PKG_TRAINER #E8F5E9 {
+    rectangle "**Trainer.init_data_backend()**\n//trainer.py:2241//" as TRAINER_INIT
+}
+
+note right of TRAINER_INIT
+  **这个方法做了3件事:**
+  1. self.init_clear_backend_cache()  // 清旧缓存
+  2. self._send_webhook_msg(...)      // 通知Discord
+  3. **configure_multi_databackend()**  // ← 唯一的核心调用
+
+  Webhook/Event 是**运维胶水代码**
+  工业项目里这种"正事只有一行,
+  但包了20行监控通知"极其常见
+end note
+
+' ============================================================
+' 第二层: 函数跳转链 (Factory入口)
+' ============================================================
+package "**Factory 入口层 (历史包袱)**\nfactory.py" as PKG_ENTRY #E3F2FD {
+    rectangle "**configure_multi_databackend()**\n//factory.py:4713//\n\n函数体只有一行:\nreturn configure_multi_databackend_new(...)" as FUNC_OLD #BBDEFB
+
+    rectangle "**configure_multi_databackend_new()**\n//factory.py:4429//\n\n1. StateTracker.clear_data_backends()\n2. args = _synchronise_state_tracker()\n3. factory = **FactoryRegistry(...)**\n4. result = factory.**configure**()\n5. return result" as FUNC_NEW #BBDEFB
+}
+
+note right of FUNC_OLD
+  **为什么存在这个空壳?**
+  这是**重构遗留 (接口转发模式)**。
+
+  **历史还原:**
+  原来这个函数有800行实际逻辑。
+  重构时，开发者:
+  1. 把逻辑搬到 _new() 和 FactoryRegistry
+  2. 把老函数**掏空**，只留一行 return
+
+  **return 在这里做了什么?**
+  return configure_multi_databackend_new(...)
+    ├─ **调用** _new()，执行那边全部逻辑
+    └─ **透传** _new() 的返回值给调用者
+
+  如果不写 return，只写:
+    configure_multi_databackend_new(...)
+  逻辑照样执行，但调用者拿到 None
+  ——返回值丢了，下游全部崩溃
+
+  **为什么不直接删掉老函数?**
+  因为 Trainer (trainer.py:2256) 在调它。
+  可能测试文件也在调它。
+  可能外部用户脚本也在调它。
+  不知道谁依赖这个名字→不敢删→加转发
+
+  **类比:** 换手机号但保留老号做呼叫转移
+  打老号的人不需要知道你换了新号
+end note
+
+note right of FUNC_NEW
+  **这一层做了什么有价值的事?**
+
+  真正有意义的只有2行:
+  - factory = FactoryRegistry(...)  // 创建实例
+  - result = factory.configure()    // 调用方法
+
+  其余是**全局状态同步**:
+  StateTracker 是伪单例,
+  多进程训练时各rank需要
+  同步配置参数
+
+  最后 return result 又是**透传**:
+  把 factory.configure() 的结果
+  原样交给上一层的 return
+  再交给 Trainer
+
+  **返回值的传递链:**
+  factory.configure() 返回 dict
+    → _new() return 透传这个 dict
+      → 老函数 return 再透传
+        → Trainer 拿到最终 dict
+
+  3层 return，传的是同一个对象
+end note
+
+' ============================================================
+' 第三层: FactoryRegistry.configure() — 真正的编排中心
+' ============================================================
+package "**FactoryRegistry.configure() — 编排中心**\nfactory.py:4252" as PKG_CONFIGURE #E3F2FD {
+
+    rectangle "**预处理配置**\n//factory.py:4280-4282//\n\n_inject_i2v_conditioning_configs()\n_inject_s2v_audio_configs()\nprocess_conditioning_datasets()\n\n//SDXL纯图片训练时这3个都不触发//" as PREPROCESS #E3F2FD
+
+    rectangle "**按顺序创建5类后端**\n//factory.py:4284-4288//\n\n① configure_**text_embed**_backends()\n② configure_**image_embed**_backends()\n③ configure_**conditioning_image_embed**_backends()\n④ configure_**distillation_cache**_backends()\n⑤ configure_**data**_backends() ← **我们追踪这条**" as FIVE_BACKENDS #90CAF9
+}
+
+note right of FIVE_BACKENDS
+  **为什么要5类后端?**
+
+  SimpleTuner 的设计哲学:
+  **所有东西都预缓存到磁盘**
+
+  ① text_embed: prompt→embedding 预计算
+  ② image_embed: IP-Adapter用,SDXL可忽略
+  ③ conditioning_image_embed: ControlNet用
+  ④ distillation_cache: 蒸馏用
+  ⑤ **data: 图片本身** ← SDXL训练核心
+
+  SDXL基础训练只关心 ① 和 ⑤
+  其余3个是空操作
+end note
+
+' ============================================================
+' 第四层: configure_data_backends — 循环每个数据集
+' ============================================================
+package "**configure_data_backends()**\nfactory.py:2583" as PKG_DATA_BACKENDS #FFF3E0 {
+    rectangle "**for循环遍历配置文件**\n//factory.py:2605-2627//\n\nfor backend in data_backend_config:\n  if disabled: skip\n  if dataset_type not IMAGE: skip\n  → **_configure_single_data_backend()**" as FOR_LOOP
+
+    rectangle "**_configure_single_data_backend()**\n//factory.py:4092//\n\n**一个数据集的完整生命周期**\n按顺序执行以下5步:" as SINGLE #FFE0B2
+}
+
+note right of FOR_LOOP
+  **data_backend_config 从哪来?**
+
+  就是第零层的 **multidatabackend.json**!
+  训练启动时被读入内存,变成
+  Python 的 List[Dict] 传到这里。
+
+  JSON 数组里有几个 {} 对象,
+  这个 for 就循环几次。
+
+  每次循环检查 dataset_type:
+  - "image" → 走完整5步初始化
+  - "text_embeds" → 跳过(已在①中处理)
+  - "disabled": true → 跳过
+
+  **数据的完整流向:**
+  你手写/向导生成 JSON
+    → 训练启动读入内存
+      → 这个 for 循环遍历
+        → 每个 {} 创建一个 DataLoader
+end note
+
+' ============================================================
+' 第五层: _configure_single_data_backend 的5个步骤
+' ============================================================
+package "**单数据集初始化流程 (5步)**" as PKG_STEPS #FFF3E0 {
+
+    rectangle "**步骤1: 解析配置**\n//factory.py:4117//\n\ninit_backend_config(backend, args)\n→ 合并默认参数\n→ 返回 init_backend dict" as STEP1
+
+    rectangle "**步骤2: 创建存储后端**\n//factory.py:2737//\n\n_configure_backend_by_type()\ntype==\"local\" → LocalDataBackend\ntype==\"aws\"   → S3DataBackend\ntype==\"csv\"   → CSVDataBackend\n\n+ 设置 instance_data_dir 路径" as STEP2
+
+    rectangle "**步骤3: 分桶**\n//factory.py:4182//\n\n_handle_bucket_operations()\n→ 详见下方 Bucket 分桶" as STEP3
+
+    rectangle "**步骤4: 组装三件套**\n//factory.py:4184//\n\n_create_dataset_and_sampler()\n→ 详见下方 DataLoader 组装" as STEP4
+
+    rectangle "**步骤5: 缓存预计算**\n//factory.py:4197//\n\n_configure_vae_cache()\n→ 遍历所有图片\n→ VAE编码成latent\n→ 存到磁盘" as STEP5
+}
+
+note right of STEP2
+  **LocalDataBackend 做了什么?**
+
+  只是一个**文件I/O封装**:
+  - read(filepath) → open() 读文件
+  - write(filepath, data) → 原子写入
+  - list_files(extensions, dir)
+      → 递归扫描文件夹
+      → 按扩展名过滤
+      → 返回路径列表
+
+  它不做任何图片处理!
+  只负责"找到文件在哪"
+end note
+
+note right of STEP5
+  **这一步最耗时!**
+
+  对每张图片:
+  1. 读取 → PIL.Image
+  2. resize到bucket对应尺寸
+  3. VAE.encode() → latent tensor
+  4. 存为 .pt 文件到 cache_dir_vae
+
+  训练时 DataLoader 直接读 .pt
+  不再碰原始图片
+
+  这就是为什么 num_workers=0:
+  数据已经是tensor了,
+  不需要多进程解码图片
+end note
+
+' ============================================================
+' 连接线
+' ============================================================
+USER_IMAGES -right-> CONFIGURE_PY : "指定路径"
+CONFIGURE_PY -right-> JSON_CONFIG : "生成"
+JSON_CONFIG -down-> TRAINER_INIT : "训练启动时读取配置"
+
+TRAINER_INIT -down-> FUNC_OLD : "调用"
+
+FUNC_OLD -down-> FUNC_NEW : "**纯转发\n0行逻辑**"
+
+FUNC_NEW -down-> PREPROCESS : "factory.configure()"
+
+PREPROCESS -down-> FIVE_BACKENDS
+
+FIVE_BACKENDS -down-> FOR_LOOP : "第⑤类: data_backends"
+
+FOR_LOOP -down-> SINGLE : "每个数据集"
+
+SINGLE -down-> STEP1
+STEP1 -down-> STEP2
+STEP2 -down-> STEP3
+STEP3 -down-> STEP4
+STEP4 -down-> STEP5
+
+' ============================================================
+' 左侧：标注每一层的"信噪比"
+' ============================================================
+note left of TRAINER_INIT
+  **信噪比: 低**
+  20行代码
+  1行核心调用
+  其余是webhook/event
+end note
+
+note left of FUNC_OLD
+  **信噪比: 0**
+  纯转发函数
+  0行有效逻辑
+end note
+
+note left of FUNC_NEW
+  **信噪比: 低**
+  创建对象+调方法
+  有价值的只有2行
+end note
+
+note left of FIVE_BACKENDS
+  **信噪比: 中**
+  编排顺序有意义
+  但SDXL只走2条
+end note
+
+note left of SINGLE
+  **信噪比: 高**
+  这才是真正干活的
+  5步都有实际逻辑
+end note
+
+' ============================================================
+' 底部总结
+' ============================================================
+note bottom of STEP5
+  **工业项目的现实:**
+
+  从 Trainer.init_data_backend() 到真正开始干活的
+  _configure_single_data_backend(), 经过了 **5层调用**:
+
+  Trainer.init_data_backend()           // 胶水: webhook + event
+    → configure_multi_databackend()     // 空壳: 纯转发
+      → configure_multi_databackend_new()  // 薄壳: 创建Factory
+        → FactoryRegistry.configure()     // 编排: 5类后端
+          → configure_data_backends()     // 循环: for each dataset
+            → **_configure_single_data_backend()**  // 真正干活
+
+  这5层里只有最后1层在做事。
+  前4层是: 历史兼容 + 监控通知 + 状态同步 + 分发路由。
+  **这就是工业代码和教科书代码的区别。**
+end note
+
+@enduml

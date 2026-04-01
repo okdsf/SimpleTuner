@@ -1,0 +1,377 @@
+@startuml SDXL_UNet_Forward_Internals
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontName "Microsoft YaHei"
+skinparam defaultFontSize 11
+skinparam ArrowThickness 2
+skinparam RoundCorner 8
+skinparam PackageBorderThickness 2
+skinparam NoteBackgroundColor #FFFFDD
+skinparam NoteBorderColor #999999
+
+title **SDXL UNet 前向传播内部结构**\n从 noisy_latent 输入到 predicted_noise 输出的完整数据流\n代码位置: diffusers/models/unets/unet_2d_condition.py
+
+' ============================================================
+' 入口: UNet 的 4 个输入
+' ============================================================
+package "**UNet 输入 (来自 prepare_batch)**" as PKG_INPUT #F5F5F5 {
+
+    rectangle "**① noisy_latents**\n[B, 4, 128, 128]\n\n原始图片经 VAE 编码的 latent\n+ 按时间步 t 加的高斯噪声\n\n**UNet 要"去噪"的对象**" as INPUT_LATENT #FFFFFF
+
+    rectangle "**② timesteps**\n[B]\n\n告诉 UNet 噪声的强度\nt=999: 几乎纯噪声\nt=0: 几乎干净\n\n**决定去噪力度**" as INPUT_TIMESTEP #FFFFFF
+
+    rectangle "**③ encoder_hidden_states**\n[B, 77, 2048]\n\nCLIP-L + CLIP-G 拼接\n77个token的**逐token表示**\n\n**通过 Cross-Attention 注入**\n决定"在哪里画什么"" as INPUT_TEXT_SEQ #FFFFFF
+
+    rectangle "**④ added_cond_kwargs**\ntext_embeds: [B, 1280]\ntime_ids: [B, 6]\n\nCLIP-G 池化输出 (全局语义)\n+ 原始分辨率/裁切坐标\n\n**通过 timestep embedding 注入**\n决定"整体画什么风格"" as INPUT_COND #FFFFFF
+}
+
+note bottom of INPUT_TEXT_SEQ
+  **你的标签从这里进入 UNet**
+
+  "sks dog sitting on grass"
+    → CLIP-L tokenize → 77 tokens
+    → CLIP-L encode → [77, 768]
+    → CLIP-G encode → [77, 1280]
+    → 拼接 → **[77, 2048]**
+
+  每个 token 保留独立表示
+  UNet 的每一层都会"看"这77个token
+end note
+
+' ============================================================
+' 步骤0: 时间步嵌入 + 条件注入
+' ============================================================
+package "**步骤0: 条件嵌入 (unet_2d_condition.py:1141-1169)**" as PKG_EMBED #E8EAF6 {
+
+    rectangle "**时间步嵌入**\n//L1142-1143//\n\nt_emb = get_time_embed(timestep)\n  → Sinusoidal编码: 整数t → 高维向量\nemb = time_embedding(t_emb)\n  → MLP投影: [B,320] → [B,1280]\n\n**把"噪声多少"编码成向量**" as EMBED_TIME #C5CAE9
+
+    rectangle "**增强嵌入 (SDXL特有)**\n//L1152-1159//\n\naug_emb = get_aug_embed(\n  text_embeds,  // CLIP-G池化: 全局语义\n  time_ids      // 分辨率+裁切: 空间元信息\n)\nemb = emb + aug_emb\n\n**时间步 + 全局语义 + 空间信息\n三合一嵌入向量 [B, 1280]**" as EMBED_AUG #9FA8DA
+
+    rectangle "**输入卷积**\n//L1169//\n\nsample = conv_in(sample)\n[B, **4**, 128, 128] → [B, **320**, 128, 128]\n\n**通道扩展: 4→320**\n为后续 attention 提供足够维度" as CONV_IN #7986CB
+}
+
+note right of EMBED_AUG
+  **SDXL 的"第二条件通道":**
+
+  Cross-Attention 注入的是**逐token细节**:
+  "dog"在哪, "grass"在哪
+
+  emb 注入的是**全局信息**:
+  整体风格 + 目标分辨率
+
+  两条通道互补:
+  一个管空间细节, 一个管全局基调
+
+  **emb 通过 ResNet 的 temb 参数**
+  **注入到每一个 block 中**
+end note
+
+' ============================================================
+' 步骤1: Down Blocks — 编码 + Skip 存储
+' ============================================================
+package "**步骤1: Down Blocks — 编码器 (unet_2d_condition.py:1208-1230)**" as PKG_DOWN #E8F5E9 {
+
+    rectangle "**初始化 Skip 栈**\n//L1208//\n\ndown_block_res_samples = (sample,)\n**tuple 当栈: 先进后出**" as DOWN_INIT #C8E6C9
+
+    rectangle "**for downsample_block in self.down_blocks:**\n//L1209//\n\n每个 Down Block 返回 2 个东西:\n  sample      → 下采样后的特征 (继续往下传)\n  res_samples → 中间特征 (**存入 skip 栈**)\n\ndown_block_res_samples += res_samples" as DOWN_LOOP #A5D6A7
+
+    rectangle "**Down Block 0**\nCrossAttnDownBlock2D\n[B, 320, 128, 128]\n→ Self-Attn → Cross-Attn → FFN\n→ ResNet (temb=emb)\n→ Downsample 2×\n输出: [B, 640, 64, 64]\n**skip: 保存2个中间特征**" as DOWN_0 #81C784
+
+    rectangle "**Down Block 1**\nCrossAttnDownBlock2D\n[B, 640, 64, 64]\n→ Self-Attn → Cross-Attn → FFN\n→ ResNet (temb=emb)\n→ Downsample 2×\n输出: [B, 1280, 32, 32]\n**skip: 保存2个中间特征**" as DOWN_1 #66BB6A
+
+    rectangle "**Down Block 2**\nDownBlock2D (无Attention)\n[B, 1280, 32, 32]\n→ ResNet only\n输出: [B, 1280, 32, 32]\n**skip: 保存2个中间特征**" as DOWN_2 #4CAF50
+}
+
+note right of DOWN_LOOP
+  **Skip 栈的累积过程:**
+
+  初始:   (input,)
+  Block0: (input, A, B)
+  Block1: (input, A, B, C, D)
+  Block2: (input, A, B, C, D, E, F)
+
+  **每个 Block 内部有多个 ResNet**
+  **每个 ResNet 的输出都保存一份**
+  不只保存 Block 最终输出
+
+  这保证了 Up Block 在每个
+  子步骤都能拿到对应分辨率的细节
+end note
+
+note left of DOWN_0
+  **每个 CrossAttn Block 内部:**
+  //attention.py:469//
+
+  1. **Self-Attention** (attn1)
+     Q,K,V 全来自图像
+     每个位置看周围→学空间关系
+
+  2. **Cross-Attention** (attn2)
+     Q 来自图像, K,V 来自文本
+     **你的标签在这里介入!**
+
+  3. **Feed-Forward Network** (FFN)
+     非线性变换
+
+  每步都有**残差连接**:
+  output = block(x) + x
+end note
+
+' ============================================================
+' 步骤2: Mid Block — 瓶颈层
+' ============================================================
+package "**步骤2: Mid Block — 瓶颈 (unet_2d_condition.py:1244-1255)**" as PKG_MID #FFF3E0 {
+
+    rectangle "**Mid Block (Bottleneck)**\nUNetMidBlock2DCrossAttn\n[B, 1280, 32, 32]\n\nResNet → **Cross-Attention** → ResNet\n\n在最低分辨率上做**全局语义推理**\n感受野覆盖整张图\n\n**这一层决定图片的整体构图和语义**\n细节在 Up Block 通过 Skip 补回来" as MID_BLOCK #FFE0B2
+}
+
+note right of MID_BLOCK
+  **为什么瓶颈层最重要?**
+
+  32×32 分辨率, 每个空间位置
+  对应原图 32×32 像素的区域
+
+  Self-Attention 在这里的感受野
+  = **整张图**: 32×32 = 1024 个 token
+  每个位置能看到所有其他位置
+
+  Cross-Attention 在这里把
+  文本语义和全局空间布局**绑定**
+
+  **ControlNet 的 mid_block_additional_residual**
+  **就是加在这一层的输出上** //L1266//
+end note
+
+' ============================================================
+' 步骤3: Up Blocks — 解码 + Skip 取回
+' ============================================================
+package "**步骤3: Up Blocks — 解码器 (unet_2d_condition.py:1268-1297)**" as PKG_UP #FCE4EC {
+
+    rectangle "**for upsample_block in self.up_blocks:**\n//L1269//\n\n每次迭代:\n1. 从 skip 栈**尾部取出**对应数量的特征\n2. res_samples = stack[-n:]\n   stack = stack[:-n]\n3. **concat(当前特征, skip特征)** → 送入 Block\n\n**先进后出 = 对称配对**\n最深的 Down 特征给最浅的 Up" as UP_LOOP #F8BBD0
+
+    rectangle "**Up Block 0**\nUpBlock2D (无Attention)\n[B, 1280, 32, 32]\n← **concat skip (E, F)** from Down2\n→ Upsample 2×\n输出: [B, 1280, 64, 64]" as UP_0 #F48FB1
+
+    rectangle "**Up Block 1**\nCrossAttnUpBlock2D\n[B, 1280, 64, 64]\n← **concat skip (C, D)** from Down1\n→ Cross-Attn + ResNet\n→ Upsample 2×\n输出: [B, 640, 128, 128]" as UP_1 #EC407A
+
+    rectangle "**Up Block 2**\nCrossAttnUpBlock2D\n[B, 640, 128, 128]\n← **concat skip (input, A, B)** from Down0\n→ Cross-Attn + ResNet\n输出: [B, 320, 128, 128]" as UP_2 #E91E63
+}
+
+note right of UP_LOOP
+  **Skip Connection 的代码实现:**
+  //L1272-1273//
+
+  res_samples = down_block_res_samples[
+    **-len(upsample_block.resnets):**
+  ]
+  down_block_res_samples = down_block_res_samples[
+    **: -len(upsample_block.resnets)**
+  ]
+
+  **从 tuple 尾部切片 = 弹出栈顶**
+
+  Block 内有几个 ResNet,
+  就保存/取回几个中间特征
+
+  **不需要索引映射表**
+  入栈顺序本身就编码了配对关系
+  这是一个极其优美的算法设计
+end note
+
+note left of UP_1
+  **Skip Connection 的作用:**
+
+  Down Block 一路下采样:
+  128→64→32
+  **高频细节(边缘/纹理)在压缩中丢失**
+
+  Mid Block 在最低分辨率做全局推理:
+  **知道整体画什么, 不知道细节怎么画**
+
+  Up Block 上采样时:
+  只靠自己恢复细节 → 效果模糊
+  **Skip 把 Down 保存的高分辨率特征送回来**
+
+  **全局语义: Mid Block 提供**
+  **局部细节: Skip Connection 补回**
+
+  类比残差连接, 但在不同尺度:
+  - 残差连接 (Block内): 保护单层信息
+  - Skip连接 (Block间): 保护空间细节
+end note
+
+' ============================================================
+' 步骤4: 输出
+' ============================================================
+package "**步骤4: 输出 (unet_2d_condition.py:1299-1303)**" as PKG_OUTPUT #E8EAF6 {
+
+    rectangle "**后处理 + 输出卷积**\n//L1300-1303//\n\nsample = conv_norm_out(sample)  // GroupNorm\nsample = conv_act(sample)       // SiLU激活\nsample = conv_out(sample)       // 卷积\n\n[B, **320**, 128, 128] → [B, **4**, 128, 128]\n**通道压缩: 320→4, 回到 latent 空间**" as CONV_OUT #C5CAE9
+}
+
+note right of CONV_OUT
+  **GroupNorm → SiLU → Conv: ResNet标准三连**
+  这个组合出现在 UNet 的**每个 Block** 里
+
+  ----
+  **GroupNorm (为什么不用 BatchNorm?):**
+
+  BatchNorm: 沿 batch 维度算均值/方差
+    → batch_size=2时统计量不稳定, 训练抖动
+  GroupNorm: 把 320 channel 分成 32 组 (每组10个)
+    在每组内部算均值/方差
+    → **只依赖单样本自身, 与 batch_size 解耦**
+    → batch_size=1 也能稳定工作
+
+  扩散模型训练 batch 经常很小 (2-4)
+  → **GroupNorm 是必然选择**
+
+  ----
+  **SiLU / Swish (为什么不用 ReLU?):**
+
+  ReLU(x) = max(0, x)
+    x<0 时输出恒为0, 梯度=0
+    → 神经元"死掉", 永远无法恢复
+
+  SiLU(x) = x × sigmoid(x)
+    x<0 时输出是**微小负值**, 梯度不为0
+    → 处处平滑可导, 训练更稳定
+    → 不会有死神经元问题
+
+  **代价:** 多算一次 sigmoid
+  对 GPU 可忽略不计
+end note
+
+' ============================================================
+' 最终输出
+' ============================================================
+rectangle "**UNet 输出: predicted_noise**\n[B, 4, 128, 128]\n\n**SDXL 是 epsilon 预测模式:**\nUNet 预测的不是去噪后的图,\n而是**它认为加在 latent 上的噪声**\n\nLoss = MSE(predicted_noise, actual_noise)\n让 UNet 猜的噪声越来越接近真实噪声" as OUTPUT #B39DDB
+
+' ============================================================
+' Cross-Attention 详解 (独立模块)
+' ============================================================
+package "**Cross-Attention 核心计算**\n//attention_processor.py:3261-3288//\nAttnProcessor2_0 (PyTorch 2.0 SDPA)" as PKG_ATTN #FFF9C4 {
+
+    rectangle "**QKV 生成**\n//L3261-3269//\n\n**Q = to_q(hidden_states)**\n  来自图像 latent 特征\n  \"我这个位置长什么样\"\n\n**关键判断:** //L3263-3264//\nif encoder_hidden_states is None:\n  K,V 也来自图像 → **Self-Attention**\nelse:\n  K,V 来自文本嵌入 → **Cross-Attention**\n\n**K = to_k(encoder_hidden_states)**\n**V = to_v(encoder_hidden_states)**\n  来自文本 embedding\n  \"标签里每个 token 说了什么\"" as ATTN_QKV #FFF176
+
+    rectangle "**多头切分**\n//L3274-3277//\n\nQ: [B, HW, dim] → [B, **heads**, HW, head_dim]\nK: [B, 77, dim] → [B, **heads**, 77, head_dim]\nV: [B, 77, dim] → [B, **heads**, 77, head_dim]\n\nSDXL: heads=10, head_dim=64\n**每个头独立关注不同的语义子空间**" as ATTN_MULTIHEAD #FFF59D
+
+    rectangle "**Scaled Dot-Product Attention**\n//L3286-3288//\n\nhidden = F.scaled_dot_product_attention(\n    Q, K, V\n)\n\n**展开: softmax(Q × K^T / √d) × V**\n\nQ×K^T: 图像每个位置 vs 文本每个token\n  → attention_map [B, heads, HW, 77]\n  → 每个像素对每个token的关注权重\n\nsoftmax: 归一化成概率分布\n\n× V: 按权重加权文本信息\n  → 注入到图像特征中" as ATTN_SDPA #FFEE58
+
+    rectangle "**输出投影**\n//L3294-3296//\n\nhidden = to_out[0](hidden)  // 线性投影\nhidden = to_out[1](hidden)  // Dropout\n\n**LoRA 插入的 4 个位置:**\n  to_q, to_k, to_v, to_out.0\n\n改变 to_q/to_k = 改变\"谁关注谁\"\n改变 to_v/to_out = 改变\"注入什么信息\"\n\n**几MB的LoRA就能改变整个风格**\n因为它控制了信息流动的全部路径" as ATTN_OUT #FDD835
+}
+
+note right of ATTN_QKV
+  **Self-Attention vs Cross-Attention**
+  **用的是同一个类、同一段代码!**
+
+  区别只在一个 if:
+  encoder_hidden_states is None?
+
+  **BasicTransformerBlock 里依次调用两次:**
+  //attention.py:514//
+  attn1: Self-Attention (encoder=None)
+    → Q,K,V 全来自图像
+    → 学习空间关系
+
+  //attention.py:552//
+  attn2: Cross-Attention (encoder=text)
+    → Q 来自图像, K,V 来自文本
+    → **你的标签在这里注入!**
+
+  每次都有**残差连接**:
+  output = attn(x) + x
+  **保底: 即使 attention 学不好**
+  **原始信息不丢失**
+  **也是 LoRA 能工作的根本原因:**
+  初始 δ=0, 模型行为=原模型
+  训练中 δ 渐增, 行为渐变
+end note
+
+note left of ATTN_SDPA
+  **attention_map 的直觉含义:**
+
+  假设图像 32×32=1024 个位置
+  文本 "a sks dog on grass" = 77 tokens
+
+  attention_map[位置i][token j]
+  = "图像位置i有多关注文本token j"
+
+  狗头位置 → "dog" token 权重高
+  草地位置 → "grass" token 权重高
+  背景位置 → 所有 token 权重均匀(低)
+
+  **这就是文本控制图像生成的机制**
+end note
+
+' ============================================================
+' ControlNet 注入点
+' ============================================================
+rectangle "**ControlNet 注入点**\n//unet_2d_condition.py:1232-1241, 1265-1266//\n\n**Down Block Skip 上叠加:**\nfor (skip, ctrl_residual) in zip(...):\n  skip = skip + ctrl_residual\n\n**Mid Block 输出上叠加:**\nsample = sample + mid_block_additional_residual\n\n**不改原始UNet权重!**\n只在 skip 和 mid 的输出上加残差\n→ 影响 Up Block 恢复细节的方式" as CONTROLNET #B2DFDB
+
+' ============================================================
+' 连接线
+' ============================================================
+INPUT_LATENT -down-> CONV_IN
+INPUT_TIMESTEP -down-> EMBED_TIME
+INPUT_TEXT_SEQ -down-> DOWN_0 : "进入每个Block\n的Cross-Attention"
+INPUT_COND -down-> EMBED_AUG
+
+EMBED_TIME -right-> EMBED_AUG
+EMBED_AUG -down-> CONV_IN
+
+CONV_IN -down-> DOWN_INIT
+DOWN_INIT -down-> DOWN_LOOP
+DOWN_LOOP -down-> DOWN_0
+DOWN_0 -down-> DOWN_1 : "下采样 2×"
+DOWN_1 -down-> DOWN_2 : "下采样 2×"
+
+DOWN_2 -down-> MID_BLOCK
+
+MID_BLOCK -down-> UP_LOOP
+UP_LOOP -down-> UP_0
+UP_0 -down-> UP_1 : "上采样 2×"
+UP_1 -down-> UP_2 : "上采样 2×"
+
+UP_2 -down-> CONV_OUT
+CONV_OUT -down-> OUTPUT
+
+ATTN_QKV -down-> ATTN_MULTIHEAD
+ATTN_MULTIHEAD -down-> ATTN_SDPA
+ATTN_SDPA -down-> ATTN_OUT
+
+' ControlNet 连接
+CONTROLNET -left-> DOWN_LOOP : "叠加到\nskip特征上"
+CONTROLNET -left-> MID_BLOCK : "叠加到\nmid输出上"
+
+' Cross-Attention 引用连接
+DOWN_0 .right.> ATTN_QKV : "内部调用"
+
+' ============================================================
+' 底部总结
+' ============================================================
+note bottom of OUTPUT
+  **SDXL UNet 的信息流总结:**
+
+  **两条条件注入通道:**
+  ① **emb** (时间步+全局语义+分辨率) → 通过 ResNet 的 temb → 每个 Block 都有
+  ② **encoder_hidden_states** (77个token) → 通过 Cross-Attention → 每个 CrossAttn Block 都有
+
+  **三段式处理:**
+  Down Blocks: 压缩空间、提取特征、保存 skip
+  Mid Block: 全局语义推理 (感受野=整张图)
+  Up Blocks: 恢复空间、取回 skip 补细节
+
+  **Skip Connection 实现:**
+  tuple 当栈, 先进后出, 入栈顺序=配对关系
+  不需要索引表, 切片操作自动对称
+
+  **ControlNet 原理:**
+  复制 Down+Mid, 把控制信号加到 skip 和 mid 的输出上
+  Up Block 在恢复细节时被引导 → 不改原始权重
+
+  **LoRA 原理:**
+  只改 Cross-Attention 的 to_q/to_k/to_v/to_out 四个线性层
+  几MB权重控制了"图像的哪个位置关注文本的哪个token"
+  = 控制了信息流动的全部路径
+end note
+
+@enduml

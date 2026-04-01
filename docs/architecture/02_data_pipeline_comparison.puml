@@ -1,0 +1,153 @@
+@startuml SDXL_Data_Pipeline_Kohya_vs_SimpleTuner
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontName "Microsoft YaHei"
+skinparam defaultFontSize 11
+skinparam ArrowThickness 2
+skinparam RoundCorner 8
+skinparam PackageBorderThickness 2
+skinparam NoteBackgroundColor #FFFFDD
+skinparam NoteBorderColor #999999
+
+title **Kohya vs SimpleTuner 数据管线对比**\n同一张图片从文件夹到 Trainer 的两条路径
+
+' ============================================================
+' 左侧: Kohya 路径
+' ============================================================
+package "**Kohya 路径**\n单后端, 约定优于配置" as PKG_KOHYA #E8F5E9 {
+
+    rectangle "**文件夹 (约定即配置)**\n\ntrain_data/\n  10_sks dog/\n    001.jpg\n    001.txt\n\n文件夹名 = repeat + prompt\n文件名 = caption来源" as K_FOLDER #C8E6C9
+
+    rectangle "**初始化阶段**\n\n1. 递归扫描文件夹\n2. 按子文件夹名解析 repeat/prompt\n3. 按宽高比分桶\n4. **VAE.encode() 全部图片**\n5. **latent 缓存到内存/磁盘**\n\n结果: latent tensor 已就绪" as K_INIT #A5D6A7
+
+    rectangle "**Dataset.__getitem__(index)**\n\n收到: 整数 index\n做的事:\n  1. 按index找到图片\n  2. **直接返回 latent tensor**\n     (从内存/磁盘缓存读取)\n  3. 附带 caption, metadata\n\n返回: **单个样本 (tensor)** " as K_DATASET #81C784
+
+    rectangle "**DataLoader**\n\nbatch_size=4\nshuffle=True (或BucketSampler)\n\n做的事:\n  攒够 batch_size 个样本\n  传给 collate_fn" as K_LOADER #66BB6A
+
+    rectangle "**collate_fn**\n\n收到: [sample1, sample2, ...]\n做的事: **只做 torch.stack()**\n  latents: [B,4,H,W]\n  captions: [str, str, ...]\n\n**几乎无逻辑**" as K_COLLATE #4CAF50
+
+    rectangle "**Trainer**\n\n收到: 完整 batch dict\n  latent_batch: [4, 4, 128, 128]\n  captions: [...]\n\n直接进 forward" as K_TRAINER #388E3C
+}
+
+' ============================================================
+' 右侧: SimpleTuner 路径
+' ============================================================
+package "**SimpleTuner 路径**\n多后端, 配置优于约定" as PKG_ST #E3F2FD {
+
+    rectangle "**JSON 配置 (显式声明)**\n\nmultidatabackend.json:\n[\n  {\n    \"id\": \"my_dog\",\n    \"type\": \"local\",\n    \"instance_data_dir\": \"/data\",\n    \"resolution\": 1024\n  }\n]" as S_CONFIG #BBDEFB
+
+    rectangle "**初始化阶段**\n\n1. 解析 JSON 配置\n2. 创建 LocalDataBackend\n3. 按宽高比分桶\n4. **VAE.encode() 全部图片**\n5. **latent 存为 .pt 文件**\n\n结果: 磁盘上一堆 .pt 文件" as S_INIT #90CAF9
+
+    rectangle "**MultiAspectSampler.__iter__()**\n\n**这里是核心差异!**\n\n做的事:\n  1. 选一个 bucket\n  2. 随机抽 batch_size 张\n  3. 读 metadata + caption\n  4. **组装完整 batch**\n\nyield: **tuple(10个metadata dict)**\n  只有路径和文本, 没有 tensor!" as S_SAMPLER #64B5F6
+
+    rectangle "**Dataset.__getitem__(tuple)**\n\n收到: Sampler 的整个 tuple\n做的事: **纯分拣**\n  training_samples: [dict, dict, ...]\n  conditioning_samples: [...]\n  校验 aspect_ratio 一致\n\n返回: **分类后的 dict**\n  还是没有 tensor!" as S_DATASET #42A5F5
+
+    rectangle "**DataLoader**\n\n**batch_size = 1 !!**\nshuffle=False\nnum_workers=0\n\n做的事: 几乎是**透传**\n  取1个\"样本\"(实际是完整batch)\n  包成 [dict] 传给 collate_fn" as S_LOADER #2196F3
+
+    rectangle "**collate_fn**\n//collate.py:554//\n\n**重活全在这里!**\n\n收到: [dict] (解包得到batch)\n做的事:\n  1. caption dropout (随机丢弃)\n  2. **读 .pt 缓存文件 → latent**\n  3. **读 text embedding 缓存**\n  4. 计算 SDXL time_ids\n  5. torch.stack() 堆叠\n\n返回: 完整 tensor batch" as S_COLLATE #1976D2
+
+    rectangle "**Trainer**\n\n收到: 完整 batch dict\n  latent_batch: [10, 4, 128, 128]\n  prompt_embeds: [10, 77, 2048]\n  add_time_ids: [10, 6]\n\n直接进 forward" as S_TRAINER #1565C0
+}
+
+' ============================================================
+' 连接线 — Kohya
+' ============================================================
+K_FOLDER -down-> K_INIT
+K_INIT -down-> K_DATASET
+K_DATASET -down-> K_LOADER
+K_LOADER -down-> K_COLLATE
+K_COLLATE -down-> K_TRAINER
+
+' ============================================================
+' 连接线 — SimpleTuner
+' ============================================================
+S_CONFIG -down-> S_INIT
+S_INIT -down-> S_SAMPLER
+S_SAMPLER -down-> S_DATASET
+S_DATASET -down-> S_LOADER
+S_LOADER -down-> S_COLLATE
+S_COLLATE -down-> S_TRAINER
+
+' ============================================================
+' 关键差异标注
+' ============================================================
+note right of S_SAMPLER
+  **Kohya:** Sampler 产出 **index** (整数)
+  **SimpleTuner:** Sampler 产出 **整个 batch** (tuple)
+
+  原因: SimpleTuner 要保证
+  同一 batch 内所有图片
+  来自**同一个 aspect ratio bucket**
+
+  如果用标准 PyTorch 模式
+  (Sampler 出 index, DataLoader 攒 batch)
+  DataLoader 无法知道哪些 index
+  属于同一个 bucket
+end note
+
+note right of S_LOADER
+  **为什么 batch_size=1?**
+
+  因为 Sampler 已经组好了完整 batch
+  DataLoader 只需要取1个"样本"
+  (这个"样本"其实是10张图的 batch)
+
+  **为什么 num_workers=0?**
+
+  1. 数据已经是 .pt 缓存, I/O 极快
+  2. 多进程需要序列化 S3 client 等
+     后端连接, 复杂度爆炸
+  3. 单进程反而干净可控
+end note
+
+note right of S_COLLATE
+  **为什么读缓存放在 collate_fn?**
+
+  SimpleTuner 支持多数据后端:
+  本地 / S3 / HuggingFace Hub
+
+  每个后端读取 .pt 的方式不同
+  collate_fn 通过 backend_id 路由:
+    StateTracker.get_vaecache(id=backend_id)
+      → 自动选择对应后端的缓存读取
+
+  如果在 Dataset 里读,
+  Dataset 需要持有所有后端的引用
+  → 违反单一职责
+
+  **Kohya 不需要这样做:**
+  只有一个本地文件夹
+  路径 = 地址, 随时能读
+end note
+
+' ============================================================
+' 底部: 数据形态变化对比
+' ============================================================
+note bottom of K_TRAINER
+  **Kohya 数据形态变化:**
+
+  文件夹 (jpg/png)
+    → [初始化] VAE.encode() → latent tensor (缓存)
+      → [Dataset] 按 index 取 1个 tensor
+        → [DataLoader] 攒够 batch_size 个
+          → [collate] stack → [B,4,H,W]
+
+  **简洁直观, 标准 PyTorch 模式**
+  每一层做的事清晰, 但只支持本地文件
+end note
+
+note bottom of S_TRAINER
+  **SimpleTuner 数据形态变化:**
+
+  JSON 配置 + 文件夹 (jpg/png)
+    → [初始化] VAE.encode() → .pt 文件 (磁盘)
+      → [Sampler] 选 bucket, 抽路径, **组 batch**
+        → [Dataset] 分拣 metadata dict
+          → [DataLoader] 透传
+            → [collate] **读 .pt + 读 embedding + stack**
+
+  **Sampler 重, DataLoader 轻, collate 重**
+  代价是复杂, 收益是支持任意存储后端
+end note
+
+@enduml

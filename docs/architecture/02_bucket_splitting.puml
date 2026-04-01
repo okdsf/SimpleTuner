@@ -1,0 +1,259 @@
+@startuml SDXL_Bucket_Splitting
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontName "Microsoft YaHei"
+skinparam defaultFontSize 11
+skinparam ArrowThickness 2
+skinparam RoundCorner 8
+skinparam PackageBorderThickness 2
+skinparam NoteBackgroundColor #FFFFDD
+skinparam NoteBorderColor #999999
+
+title **SimpleTuner SDXL 分桶逻辑详解**\n为什么分桶? 怎么分? 多卡怎么切?
+
+' ============================================================
+' 为什么需要分桶 — 问题的根源
+' ============================================================
+package "**问题: 为什么需要分桶?**" as PKG_WHY #FFEBEE {
+
+    rectangle "**你的图片文件夹 (现实情况)**\n\n001.jpg  →  1920×1080 (16:9)\n002.jpg  →   800×800  (1:1)\n003.jpg  →   600×900  (2:3)\n004.jpg  →  1024×1024 (1:1)\n005.jpg  →  1280×720  (16:9)\n006.jpg  →   900×1200 (3:4)" as RAW_IMAGES
+
+    rectangle "**PyTorch 的硬约束**\n\ntorch.stack() 要求\n同一个 batch 内所有 tensor\n必须 **shape 完全相同**\n\n不能把 1024×1024 和 768×1024\n放在同一个 batch 里!" as CONSTRAINT #FFCDD2
+}
+
+note right of CONSTRAINT
+  **这就是分桶的根本原因:**
+
+  如果所有图片都 resize 到 1024×1024,
+  那就不需要分桶 — 但这会:
+  1. 正方形裁切丢失构图信息
+  2. 拉伸变形
+
+  SDXL 支持**多分辨率训练**:
+  保持原始宽高比, 只调整总像素量。
+  代价就是需要分桶机制来保证
+  同 batch 同 shape。
+end note
+
+' ============================================================
+' 第一步: 触发入口
+' ============================================================
+package "**触发入口**" as PKG_TRIGGER #E3F2FD {
+    rectangle "**_handle_bucket_operations()**\n//factory.py:2912//\n\n主进程: refresh_buckets()\n其他进程: 等待 → 加载缓存\n最后: split_buckets_between_processes()" as TRIGGER
+}
+
+' ============================================================
+' 第二步: compute_aspect_ratio_bucket_indices — 主函数
+' ============================================================
+package "**第一阶段: 发现新文件 + 多进程处理**\nMetadataBackend //base.py:468//" as PKG_COMPUTE #E8F5E9 {
+
+    rectangle "**compute_aspect_ratio_bucket_indices()**\n//base.py:468//\n\n1. load_image_metadata()  // 加载已有缓存\n2. _discover_new_files()  // 找缓存里没有的新图片\n3. 如果没有新文件 → 直接返回(用缓存)" as COMPUTE_MAIN
+
+    rectangle "**多进程/多线程并行处理**\n//base.py:569-601//\n\nnum_cpus = aspect_bucket_worker_count\nfiles_split = np.array_split(new_files, num_cpus)\n\n启动 N 个 worker 进程/线程\n每个 worker 处理一份文件切片" as PARALLEL
+
+    rectangle "**_bucket_worker() — 每个worker干的事**\n//base.py:401//\n\nfor file in my_file_shard:\n  _process_for_bucket(file, ...)\n  每处理500个文件,\n  通过 Queue 发送中间结果给主进程\n\n主进程实时合并各worker的结果" as WORKER
+}
+
+note right of COMPUTE_MAIN
+  **缓存机制:**
+
+  分桶结果会被存到磁盘:
+  - image_metadata.json (每张图的元数据)
+  - aspect_ratio_bucket_indices (分桶结果)
+
+  第二次训练时, 如果文件夹没变,
+  _discover_new_files() 返回空列表,
+  直接用缓存, **0开销**。
+
+  这就是为什么第一次训练特别慢,
+  之后就快了。
+end note
+
+note right of PARALLEL
+  **为什么要多进程?**
+
+  10万张图片, 每张都要:
+  - 读取文件头获取尺寸
+  - 计算宽高比
+  - 确定目标分辨率
+
+  单线程可能要几十分钟,
+  8个worker并行只需几分钟。
+end note
+
+' ============================================================
+' 第三步: _process_for_bucket — 单张图片的处理
+' ============================================================
+package "**第二阶段: 单张图片 → 确定bucket**\n_process_for_bucket() //discovery.py:357//" as PKG_SINGLE #FFF3E0 {
+
+    rectangle "**读取图片获取尺寸**\n//discovery.py:441-452//\n\nimage_data = data_backend.read(path)\nimage = load_image(BytesIO(image_data))\n→ original_size = (1920, 1080)" as READ_SIZE
+
+    rectangle "**尺寸检查 — 太小的踢掉**\n//discovery.py:483-491//\n\nif not meets_resolution_requirements():\n  statistics[\"skipped\"][\"too_small\"] += 1\n  return  // 跳过这张图\n\n例: 最小要求 1024px,\n但图片只有 256×256 → 跳过" as SIZE_CHECK
+
+    rectangle "**TrainingSample.prepare() — 核心计算**\n//training_sample.py:339//\n\n输入: 原始尺寸 (1920, 1080)\n输出:\n  - target_size: 目标尺寸 (1365, 768)\n  - aspect_ratio: 1.778 (≈16:9)\n  - intermediary_size: 中间尺寸\n  - crop_coordinates: 裁切坐标" as PREPARE #FFE0B2
+
+    rectangle "**确定 bucket_key**\n//discovery.py:524-528//\n\nbucket_key = str(aspect_ratio)  // \"1.778\"\n\naspect_ratio_bucket_indices\n  .setdefault(\"1.778\", [])\n  .append(\"001.jpg\")" as ASSIGN_BUCKET
+}
+
+note right of PREPARE
+  **target_size 怎么算的?**
+
+  目标: 保持宽高比, 但总像素量
+  接近 resolution² (如 1024²≈1M像素)
+
+  原图 1920×1080 (16:9):
+  1. 宽高比 = 1920/1080 = 1.778
+  2. 目标面积 = 1024² = 1048576
+  3. 保持比例:
+     h = sqrt(1048576 / 1.778) ≈ 768
+     w = 768 × 1.778 ≈ 1365
+  4. 对齐到64像素:
+     target = (1344, 768)
+
+  **对齐到64像素是SDXL的硬要求**
+  因为 VAE 下采样8倍,
+  UNet还有其他下采样,
+  最终必须整除。
+end note
+
+note right of ASSIGN_BUCKET
+  **bucket_key 就是宽高比的字符串**
+
+  "1.778" → 16:9 的图片
+  "1.0"   → 正方形
+  "0.75"  → 3:4 竖图
+
+  同一个 key 下的图片
+  target_size 相同
+  → 可以 stack 成一个 batch
+end note
+
+' ============================================================
+' 第四步: 分桶结果
+' ============================================================
+package "**第三阶段: 分桶结果**" as PKG_RESULT #F3E5F5 {
+    rectangle "**aspect_ratio_bucket_indices (最终数据结构)**\n\n{\n  \"1.778\": [\"001.jpg\", \"005.jpg\"],        // 16:9 → target (1344,768)\n  \"1.0\":   [\"002.jpg\", \"004.jpg\"],        // 1:1  → target (1024,1024)\n  \"0.667\": [\"003.jpg\"],                    // 2:3  → target (832,1216)\n  \"0.75\":  [\"006.jpg\"],                    // 3:4  → target (896,1152)\n}" as BUCKET_DICT #E1BEE7
+}
+
+note right of BUCKET_DICT
+  **每张图同时生成了元数据:**
+
+  image_metadata["001.jpg"] = {
+    "original_size": (1920, 1080),
+    "target_size": (1344, 768),
+    "crop_coordinates": (288, 0),
+    "aspect_ratio": 1.778,
+    "luminance": 0.45
+  }
+
+  这些元数据后续用于:
+  - collate_fn 里计算 time_ids (SDXL)
+  - VAE cache 按 target_size resize后编码
+end note
+
+' ============================================================
+' 第五步: 多卡切分
+' ============================================================
+package "**第四阶段: 多卡切分**\nsplit_buckets_between_processes() //base.py:688//" as PKG_SPLIT #E3F2FD {
+
+    rectangle "**计算 effective_batch_size**\n//base.py:723-724//\n\neffective_batch_size =\n  batch_size × num_gpus × grad_accum\n\n例: batch=4, 2卡, grad_accum=2\n→ effective = 4×2×2 = 16\n\n每个bucket至少要16张图\n否则无法组成完整batch!" as EFF_BATCH
+
+    rectangle "**验证: 图够不够?**\n//base.py:729-813//\n\n对每个bucket检查:\n  图片数 × (repeats+1) ≥ effective_batch_size?\n\n不够时:\n  - allow_oversubscription=true\n    → 自动增大 repeats\n  - 否则 → **报错, 给出5种解决方案**" as VALIDATE
+
+    rectangle "**切分到各进程**\n//base.py:815-864//\n\n对每个bucket:\n1. shuffle(images)  // 打乱顺序\n2. trim到effective_batch_size的整数倍\n3. accelerator.split_between_processes()\n   // 均匀分给各GPU\n\n例: bucket \"1.0\" 有 100张图, 2卡:\n  GPU0: [img1, img3, img5, ...] (50张)\n  GPU1: [img2, img4, img6, ...] (50张)" as SPLIT_EXEC
+}
+
+note right of VALIDATE
+  **报错信息非常友好 (工业级):**
+
+  "Dataset configuration will produce
+   zero usable batches.
+   Solutions:
+   1. Reduce batch_size
+   2. Reduce gradient_accumulation_steps
+   3. Use fewer GPUs
+   4. Increase repeats
+   5. Add more samples
+   6. Enable --allow_dataset_oversubscription"
+
+  **这种详细的错误信息是工业代码
+  和玩具代码的分水岭。**
+  用户不需要去读源码就能解决问题。
+end note
+
+note right of SPLIT_EXEC
+  **切分后每个GPU只看到自己那份**
+
+  这保证了:
+  1. 各GPU不会训练重复数据
+  2. 同一个bucket里的图片
+     被均匀分配
+  3. 每个GPU本地的 DataLoader
+     只从自己那份数据里采样
+end note
+
+' ============================================================
+' 连接线
+' ============================================================
+RAW_IMAGES -down-> CONSTRAINT
+CONSTRAINT -down-> TRIGGER
+
+TRIGGER -down-> COMPUTE_MAIN
+COMPUTE_MAIN -down-> PARALLEL : "有新文件时"
+PARALLEL -down-> WORKER : "每个worker一份切片"
+
+WORKER -down-> READ_SIZE : "对每张图"
+READ_SIZE -down-> SIZE_CHECK
+SIZE_CHECK -down-> PREPARE : "尺寸合格"
+PREPARE -down-> ASSIGN_BUCKET
+
+ASSIGN_BUCKET -down-> BUCKET_DICT : "所有图处理完毕"
+
+BUCKET_DICT -down-> EFF_BATCH
+EFF_BATCH -down-> VALIDATE
+VALIDATE -down-> SPLIT_EXEC : "图够用"
+
+' ============================================================
+' 左侧标注: 与Kohya的对比
+' ============================================================
+note left of COMPUTE_MAIN
+  **Kohya对比:**
+  Kohya也有分桶机制
+  (BucketManager)
+  逻辑几乎一样:
+  按宽高比分组,
+  对齐到64px。
+
+  区别:
+  SimpleTuner 多了
+  多进程并行 +
+  磁盘缓存 +
+  多卡切分
+end note
+
+note left of PREPARE
+  **这一步最关键:**
+  TrainingSample.prepare()
+  决定了每张图最终
+  被resize/crop到多大
+
+  target_size_calculator()
+  是核心数学函数:
+  保持宽高比 +
+  对齐到64px +
+  总像素量≈resolution²
+end note
+
+note left of SPLIT_EXEC
+  **分桶完成后的状态:**
+
+  每个GPU的
+  MetadataBackend 里
+  只有自己那份数据。
+
+  → 进入步骤4:
+  组装 Dataset +
+  Sampler + DataLoader
+end note
+
+@enduml

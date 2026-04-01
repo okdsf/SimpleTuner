@@ -1,0 +1,324 @@
+@startuml SDXL_Training_Pipeline
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontName "Microsoft YaHei"
+skinparam defaultFontSize 11
+skinparam ArrowThickness 2
+skinparam RoundCorner 8
+skinparam PackageBorderThickness 2
+skinparam NoteBackgroundColor #FFFFDD
+skinparam NoteBorderColor #999999
+
+title **SimpleTuner SDXL 完整训练链路**\n从用户配置 → 初始化 → 数据加载 → 时间步/加噪 → UNet前向
+
+' ============================================================
+' 阶段A: 用户输入
+' ============================================================
+package "**阶段A: 用户输入 (训练之前)**" as PKG_USER #F5F5F5 {
+
+    rectangle "**你的图片文件夹**\n\n/data/my_pictures/\n  ├── 001.jpg  (1920x1080)\n  ├── 002.png  (1024x1024)\n  ├── 003.webp (768x1024)\n  └── ..." as USER_IMAGES #FFFFFF
+
+    rectangle "**configure.py (TUI向导)**\n//configure.py:2691//\n\n终端交互式配置工具 (curses TUI)\n引导你填写模型/路径/分辨率等\n\n**输出:** 生成 JSON 配置文件\n你也可以直接手写JSON" as CONFIGURE_PY #E0E0E0
+
+    rectangle "**multidatabackend.json**\n//config/multidatabackend.json//\n\n[\n  {\n    \"id\": \"my_dataset\",\n    \"type\": \"local\",\n    \"instance_data_dir\": \"/data/my_pictures\",\n    \"resolution\": 1024,\n    \"caption_strategy\": \"filename\"\n  }\n]" as JSON_CONFIG #FFF9C4
+}
+
+note right of JSON_CONFIG
+  **Kohya:** 约定优于配置
+    文件夹名 = 配置
+    10_sks dog/ → repeat=10
+
+  **SimpleTuner:** 配置优于约定
+    一切显式写在 JSON 里
+end note
+
+' ============================================================
+' 阶段B: 初始化 (只执行一次)
+' ============================================================
+package "**阶段B: 初始化阶段 (只执行一次, 可能数十分钟)**" as PKG_INIT #E8F5E9 {
+
+    rectangle "**Trainer (上帝类 6988行)**\n//trainer.py//\n\nTrainer.init_data_backend()\n//trainer.py:2241//\n\n做3件事:\n1. 清旧缓存\n2. webhook通知\n3. **configure_multi_databackend()** ← 唯一核心" as TRAINER_INIT #C8E6C9
+
+    rectangle "**Factory 入口 (历史包袱)**\n//factory.py//\n\nconfigure_multi_databackend()  //L4713//\n  └→ return configure_multi_databackend_new()\n       └→ factory = FactoryRegistry(...)\n            result = factory.**configure()**\n            return result\n\n**3层return透传同一个对象**\n空壳→薄壳→真正干活" as FACTORY_ENTRY #A5D6A7
+
+    rectangle "**FactoryRegistry.configure()**\n//factory.py:4252// — 编排中心\n\n按顺序创建5类后端:\n① text_embed 后端 (prompt预编码)\n② image_embed 后端 (SDXL跳过)\n③ conditioning_image_embed (SDXL跳过)\n④ distillation_cache (SDXL跳过)\n⑤ **data 后端** ← 核心" as FACTORY_CONFIGURE #81C784
+
+    rectangle "**单数据集初始化 (5步)**\n//factory.py:4092//\n\n步骤1: init_backend_config() 解析配置\n步骤2: LocalDataBackend 创建存储后端\n步骤3: MetadataBackend 按宽高比**分桶**\n步骤4: Dataset + Sampler + **DataLoader**\n步骤5: VAE.encode() **全部图片→.pt磁盘缓存**" as INIT_STEPS #66BB6A
+}
+
+note right of FACTORY_ENTRY
+  **接口转发模式:**
+
+  老函数被掏空只剩 return
+  Trainer 调老函数名 → 转发到新实现
+  调用者无感知
+
+  类比: 换手机号保留老号做呼叫转移
+end note
+
+note right of INIT_STEPS
+  **步骤5最耗时!**
+
+  每张图: PIL→resize→VAE.encode()→.pt
+  每个prompt: TextEncoder→embedding→.pt
+  之后训练循环只读缓存, 不碰原图
+
+  **分桶逻辑:**
+  {"1.0": [img1,img3], "0.75": [img2], ...}
+  每个bucket内图片宽高比一致
+  保证同batch可以stack成tensor
+
+  **DataLoader特殊设计:**
+  batch_size=1, num_workers=0
+  因为batch由Sampler内部组装
+  DataLoader只是透传
+end note
+
+' ============================================================
+' SESE信任边界
+' ============================================================
+rectangle "**══════ SESE 信任边界 ══════**\n从此刻起, 训练循环**无条件信任**内存中的一切资源, 不再做任何合法性校验" as SESE_BOUNDARY #F44336
+
+' ============================================================
+' 阶段C: 训练循环 — 数据取出
+' ============================================================
+package "**阶段C: 训练循环 — 每个step重复**" as PKG_TRAIN #E3F2FD {
+
+    rectangle "**Trainer.train() 主循环**\n//trainer.py:5384//\n\nfor step in range(total_steps):\n  raw_batch = iterator_fn()\n  prepared_batch = self.prepare_batch(raw_batch)\n  model_pred = self.model_predict(prepared_batch)\n  loss = self.model.loss(prepared_batch, model_pred)\n  loss.backward()\n  optimizer.step()" as TRAIN_LOOP #BBDEFB
+
+    rectangle "**数据取出链 (每step)**\n\n**Sampler** //sampler.py:895//\n  选bucket → 随机抽batch_size张路径\n  yield tuple({path,caption,metadata} × N)\n  **只有路径和文本, 没有tensor!**\n         ↓\n**Dataset** //dataset.py:47//\n  分拣: training_samples vs conditioning\n  校验: 同batch宽高比一致\n  **还是没有tensor!**\n         ↓\n**DataLoader** (batch_size=1, 透传)\n         ↓\n**collate_fn** //collate.py:554//\n  **重活在这里:**\n  1. caption dropout (CFG训练端)\n  2. 读 .pt 缓存 → latent tensor\n  3. 读 text embedding 缓存\n  4. 计算 SDXL time_ids\n  5. torch.stack() 堆叠\n         ↓\n  输出: {latent_batch, prompt_embeds,\n         add_time_ids, ...} 全是tensor" as DATA_CHAIN #90CAF9
+}
+
+note right of DATA_CHAIN
+  **为什么读缓存放在collate_fn?**
+
+  SimpleTuner支持多存储后端:
+  本地 / S3 / HuggingFace Hub
+  collate_fn 通过 backend_id 路由
+  到对应的缓存系统
+
+  **Kohya不需要这样:**
+  只有一个本地文件夹
+  Dataset直接返回tensor
+  collate只做stack
+end note
+
+' ============================================================
+' 阶段D: 时间步生成 + 加噪 — ImageModelFoundation
+' ============================================================
+package "**阶段D: 时间步 + 加噪 (BIG GUY: common.py 5293行)**" as PKG_TIMESTEP #FFF3E0 {
+
+    rectangle "**model.prepare_batch()**\n//common.py:4273//\n\n**这个方法是时间步+加噪的全部逻辑**\n由Trainer.prepare_batch()调用\n//trainer.py:4992//" as PREPARE_BATCH #FFE0B2
+
+    rectangle "**D1: 移动到GPU + 整理条件**\n//common.py:4288-4338//\n\nlatents → GPU (weight_dtype)\nencoder_hidden_states → GPU\npooled_embeds → added_cond_kwargs\ntime_ids → added_cond_kwargs\n\n**SDXL特有: added_cond_kwargs**\n包含 text_embeds + time_ids" as D1_MOVE #FFCC80
+
+    rectangle "**D2: 采样高斯噪声**\n//common.py:4339-4367//\n\nnoise = torch.randn_like(latents)\n\n+ offset_noise (可选):\n  noise += offset * randn(B,C,**1,1**)\n  空间维度=1, broadcast到整图\n  = 给噪声加**全局亮度/色调偏移**\n\n+ input_perturbation (可选):\n  input_noise = noise + perturb * randn\n  训练噪声和目标噪声略有不同\n  防止过拟合" as D2_NOISE #FFB74D
+
+    rectangle "**D3: 生成时间步 (SDXL分支)**\n//common.py:4375-4388//\n\n**关键分叉: SDXL走else分支**\nSDXL.PREDICTION_TYPE = EPSILON (非flow matching)\n\n  ┌ weights = generate_timestep_weights()\n  │   //custom_schedule.py:61//\n  │   按bias策略加权:\n  │   earlier/later/range/none\n  │\n  └ timesteps = segmented_timestep_selection()\n      //custom_schedule.py:18//\n      把[0,999]切成bsz段\n      每段按权重抽1个\n      → 保证batch内时间步分散" as D3_TIMESTEP #FF9800
+
+    rectangle "**D4: 加噪**\n//common.py:4389-4393//\n\nnoisy_latents = scheduler.add_noise(\n    latents, noise, timesteps\n)\n\n**DDPM加噪公式:**\nx_t = sqrt(a_bar_t) * x_0 + sqrt(1-a_bar_t) * e\n\n其中:\n  x_0 = 干净latent\n  e   = 高斯噪声\n  a_bar_t = 累积alpha (由timestep决定)\n  t越大 → 噪声越多 → x_t越接近纯噪声" as D4_ADD_NOISE #F57C00
+}
+
+note left of D3_TIMESTEP
+  **Flow Matching vs DDPM**
+  //common.py:4369//
+
+  **if FLOW_MATCHING:** (Flux/SD3)
+    sigmas = sample_flow_sigmas()
+    x_t = (1-s)*x_0 + s*noise
+    线性插值, 更简洁
+
+  **else:** (SDXL/SD1.x)
+    timesteps = segmented_selection()
+    x_t = sqrt(a)*x_0 + sqrt(1-a)*noise
+    DDPM经典公式
+
+  **这个if/else是框架最重要的分叉点**
+end note
+
+note right of D2_NOISE
+  **工程Trick: offset_noise**
+
+  标准高斯噪声是零均值的,
+  但真实图片latent分布**不是**:
+  暗图均值为负, 亮图均值为正
+
+  高噪声步时 (接近纯噪声),
+  零均值噪声抹掉了全局亮度信息
+  → 模型无法区分"本来暗"还是"本来亮"
+  → 生成极暗/极亮图片的能力差
+
+  randn(B,C,**1,1**) 是空间1x1的随机值
+  broadcast到整图 = **全局偏移量**
+  迫使模型学习还原全局亮度/色调基线
+
+  **本质: 操纵噪声的统计性质,**
+  **对齐训练数据的真实分布**
+  高斯噪声不是神圣不可变的,
+  它是可以被工程化调整的工具
+end note
+
+note right of D3_TIMESTEP
+  **分段采样 vs 标准采样:**
+
+  标准 (bsz=4):
+    可能: [234, 251, 198, 220]
+    全扎堆! 浪费训练效率
+
+  分段 (bsz=4):
+    [750-999] → 887
+    [500-749] → 623
+    [250-499] → 341
+    [  0-249] → 112
+    均匀覆盖全区间!
+
+  ----
+  **⚠ 深层思考: 均匀分段一定更好吗?**
+
+  如果数据分布在某些时间步区间有更高的
+  信息密度, 随机采样"扎堆"到那个区间
+  **恰好是正确的行为** — 它和数据先验对齐。
+  强制分段反而破坏了这个自然聚集。
+
+  例: 人脸特写数据集, 低时间步(细节还原)
+  比高时间步更重要。随机采样在大batch下
+  自然会在低区间聚集, 这是**有益的偏置**。
+
+  **本质是投资的 Beta/Alpha 问题:**
+  - 均匀分段 = Beta收益: 稳定基准, 不太好不太差
+  - 随机采样 = Alpha收益: 可能捕获数据先验的超额回报
+    但也可能连续几batch全采在无用区间
+
+  **产品定位决定了选择:**
+  - 小数据精调 (Kohya): 先验强, 让采样自然聚集
+  - 大规模训练 (SimpleTuner): 数据杂/用户多,
+    均匀覆盖是 minimax 策略 — 最小化最坏情况
+
+  **语义偏置是正交的第三维度:**
+  不改采样机制, 在loss层面加权
+  "同样的梯度, 这个方向更值钱"
+  无论底层用均匀还是随机, 偏置都是正面的
+end note
+
+' ============================================================
+' 阶段E: UNet前向
+' ============================================================
+package "**阶段E: UNet前向 (SDXL子类)**" as PKG_FORWARD #FCE4EC {
+
+    rectangle "**SDXL.model_predict()**\n//sdxl/model.py:258//\n\nmodel_pred = self.model(\n    **noisy_latents**,   [B, 4, H/8, W/8]\n    **timesteps**,       [B]\n    **encoder_hidden_states**, [B, 77, 2048]\n    added_cond_kwargs={\n      text_embeds: [B, 1280],\n      time_ids:    [B, 6]\n    }\n)\n\n↓\nUNet2DConditionModel 前向传播\n输入加噪latent, 预测噪声 e\n\n返回: {\"model_prediction\": model_pred}" as UNET_FORWARD #F8BBD0
+}
+
+note right of UNET_FORWARD
+  **SDXL子类只有416行**
+  //sdxl/model.py//
+
+  绝大部分逻辑在基类 common.py
+  子类只override:
+  - model_predict(): UNet调用方式
+  - _format_text_embedding(): 双CLIP格式
+  - TEXT_ENCODER_CONFIGURATION: 双编码器
+
+  **这就是继承的价值所在:**
+  5293行基类 + 416行子类
+  = 完整的SDXL训练
+end note
+
+' ============================================================
+' 阶段F: Loss + 反向 (预留)
+' ============================================================
+rectangle "**→ 后续: Loss计算 + 反向传播**\n(下一张图详解)" as NEXT #E0E0E0
+
+' ============================================================
+' 连接线
+' ============================================================
+USER_IMAGES -right-> CONFIGURE_PY : "指定路径"
+CONFIGURE_PY -right-> JSON_CONFIG : "生成"
+JSON_CONFIG -down-> TRAINER_INIT : "训练启动时\n读取配置"
+
+TRAINER_INIT -down-> FACTORY_ENTRY
+FACTORY_ENTRY -down-> FACTORY_CONFIGURE : "3层return透传"
+FACTORY_CONFIGURE -down-> INIT_STEPS
+
+INIT_STEPS -down-> SESE_BOUNDARY : "初始化完成"
+SESE_BOUNDARY -down-> TRAIN_LOOP : "进入训练循环"
+
+note right of SESE_BOUNDARY
+  **SESE原则 (Single Entry Single Exit) 的工业体现**
+
+  Factory.configure() 是一个 **SESE边界**:
+  进去时什么都没准备好,
+  出来时 **一切保证就绪**:
+
+  - 所有bucket已分好
+  - 所有latent已缓存到磁盘 (.pt)
+  - 所有text embedding已缓存
+  - 所有DataLoader已组装完毕
+  - StateTracker全局状态已同步
+
+  **如果任何环节失败 → 初始化阶段直接抛异常终止**
+  不会带着半成品进入训练循环
+
+  因此训练循环可以写得**极其干净**:
+  不需要检查 "缓存存在吗?"
+  不需要检查 "bucket空不空?"
+  不需要检查 "DataLoader ready了没?"
+  — Factory已经替你全部保证了
+
+  **Kohya也是同样的设计:**
+  prepare_dataset 跑完后,
+  训练循环从不问 "latent算过了吗?"
+
+  **这是所有严肃工程项目的共识:**
+  初始化承担全部复杂度和校验,
+  运行时只管计算
+end note
+
+TRAIN_LOOP -down-> DATA_CHAIN : "iterator_fn()\n取一个batch"
+
+DATA_CHAIN -down-> PREPARE_BATCH : "raw_batch\n(全是tensor)"
+
+PREPARE_BATCH -down-> D1_MOVE
+D1_MOVE -down-> D2_NOISE
+D2_NOISE -down-> D3_TIMESTEP
+D3_TIMESTEP -down-> D4_ADD_NOISE
+
+D4_ADD_NOISE -down-> UNET_FORWARD : "prepared_batch:\nnoisy_latents + timesteps\n+ encoder_hidden_states\n+ added_cond_kwargs"
+
+UNET_FORWARD -down-> NEXT : "model_prediction\n(预测的噪声 e)"
+
+' ============================================================
+' 左侧: 阶段标注
+' ============================================================
+note left of TRAINER_INIT
+  **阶段B 文件跨度:**
+  trainer.py → factory.py
+  → local.py → base.py
+  → sampler.py → dataset.py
+
+  6个文件协作完成初始化
+  但真正干活的是最后2步
+end note
+
+note left of PREPARE_BATCH
+  **阶段D 只在1个文件里:**
+  common.py:4273-4432
+
+  160行完成:
+  GPU搬运 + 采噪声
+  + 生成时间步 + 加噪
+
+  调用了 custom_schedule.py
+  的2个函数作为工具
+end note
+
+note left of UNET_FORWARD
+  **阶段E 只有30行有效代码**
+
+  sdxl/model.py:258-319
+  就是一次 self.model() 调用
+  把准备好的tensor喂进UNet
+
+  所有复杂度在阶段D
+end note
+
+@enduml

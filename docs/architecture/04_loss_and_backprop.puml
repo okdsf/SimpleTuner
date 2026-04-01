@@ -1,0 +1,391 @@
+@startuml SDXL_Loss_and_Backpropagation
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontName "Microsoft YaHei"
+skinparam defaultFontSize 11
+skinparam ArrowThickness 2
+skinparam RoundCorner 8
+skinparam PackageBorderThickness 2
+skinparam NoteBackgroundColor #FFFFDD
+skinparam NoteBorderColor #999999
+
+title **SDXL Loss计算 + 反向传播 完整链路**\n从 UNet 输出到权重更新的每一步\n代码: common.py (Loss) + trainer.py (反向传播+优化)
+
+' ============================================================
+' 入口: 来自 UNet 的输出
+' ============================================================
+rectangle "**来自阶段E: UNet前向输出**\n\nmodel_pred = UNet(noisy_latents, t, text_emb)\n→ predicted_noise [B, 4, 128, 128]\n\n**UNet认为加在latent上的噪声是什么**" as UNET_OUTPUT #B39DDB
+
+' ============================================================
+' 阶段F1: 确定预测目标
+' ============================================================
+package "**阶段F1: 确定预测目标 (target)**\n//common.py:3504-3527// get_prediction_target()" as PKG_TARGET #E8F5E9 {
+
+    rectangle "**SDXL: EPSILON 预测**\n//L3515-3516//\n\ntarget = prepared_batch[\"noise\"]\n\n**目标就是我们加进去的那个噪声!**\nLoss = UNet预测的噪声 vs 真实噪声\n\n其他模式 (非SDXL):\n  FLOW_MATCHING: target = noise - latents\n  V_PREDICTION: target = velocity(latents, noise, t)\n  SAMPLE: target = 干净latent本身" as TARGET_EPSILON #C8E6C9
+}
+
+note right of TARGET_EPSILON
+  **为什么不同模型用不同的预测目标?**
+
+  **Epsilon** (SDXL): 预测噪声
+    最直觉: "猜猜加了什么噪声"
+    在高噪声步效果好, 低噪声步信号弱
+
+  **V-prediction** (SD2.x): 预测速度
+    v = sqrt(a)*noise - sqrt(1-a)*latent
+    高低噪声步都有稳定信号
+
+  **Flow Matching** (Flux/SD3): 预测流
+    target = noise - latent
+    线性插值框架, 数学更简洁
+
+  **本质都是同一件事的不同参数化**
+  最终都能还原干净的 latent
+end note
+
+' ============================================================
+' 阶段F2: Loss函数选择
+' ============================================================
+package "**阶段F2: Loss函数计算**\n//common.py:4591-4769// loss()" as PKG_LOSS #E3F2FD {
+
+    rectangle "**Loss 类型分叉**\n//common.py:4603//\n\nloss_type = config.loss_type\n\n默认: **\"l2\"** (MSE)\n可选: \"huber\" / \"smooth_l1\"" as LOSS_TYPE #BBDEFB
+
+    rectangle "**L2 Loss (默认 SDXL)**\n//common.py:4719//\n\nloss = F.mse_loss(\n    model_pred.float(),\n    target.float(),\n    reduction=\"none\"  // ← 不立即求均值!\n)\n\n**逐像素计算** → [B, 4, 128, 128]\n每个像素位置都有一个 loss 值\n后续权重函数需要这个粒度" as LOSS_L2 #90CAF9
+
+    rectangle "**Huber Loss (可选)**\n//common.py:4530-4531//\n\nloss = 2*c*(sqrt((pred-target)²+c²) - c)\n\n**L2 和 L1 的混合体:**\n误差小时 ≈ L2 (精确拟合细节)\n误差大时 ≈ L1 (不被离群值带飞)\n\nc 越小 → 越接近 L1 (鲁棒)\nc 越大 → 越接近 L2 (精确)" as LOSS_HUBER #64B5F6
+
+    rectangle "**Scheduled Huber (进阶)**\n//common.py:4546-4586//\n\nhuber_c 随时间步**动态调整**:\n\n  constant: c = 固定值\n  exponential: c = exp(-α*t)\n    低时间步 → 大c → 接近L2 (精抠细节)\n    高时间步 → 小c → 接近L1 (容忍大误差)\n  snr: c 跟随信噪比变化\n\n**直觉:** 高噪声时别太纠结精度,\n低噪声时要精雕细琢" as LOSS_SCHEDULED #42A5F5
+}
+
+note right of LOSS_L2
+  **reduction=\"none\" 是关键设计!**
+
+  如果直接 reduction="mean":
+    → 得到1个标量, 无法再加权
+    → SNR权重、Mask权重全部失效
+
+  reduction="none":
+    → 得到 [B, 4, 128, 128] 的逐像素 loss
+    → 先乘各种权重
+    → 最后再 .mean() 求均值
+
+  **工业 Loss 的标准模式:**
+  先逐元素算 → 加权 → 最后聚合
+end note
+
+note left of LOSS_HUBER
+  **为什么 SDXL 要考虑 Huber?**
+
+  MSE 的问题: 对离群值敏感
+  一个像素预测错得很离谱
+  → (pred-target)² 爆炸
+  → 梯度被这个像素主导
+  → 其他99%的像素学不到东西
+
+  Huber: 大误差区域用 L1
+  梯度恒定, 不会被带飞
+  小误差区域用 L2
+  保持精确拟合能力
+
+  **经验:** 数据噪声大/标注质量差
+  → Huber 比 MSE 稳定
+end note
+
+' ============================================================
+' 阶段F3: SNR 权重 (Min-SNR-γ)
+' ============================================================
+package "**阶段F3: SNR 加权 (Min-SNR-γ 策略)**\n//common.py:4698-4737// + //min_snr_gamma.py//" as PKG_SNR #FFF3E0 {
+
+    rectangle "**计算信噪比 SNR**\n//min_snr_gamma.py:17-39//\n\nalpha = sqrt(alphas_cumprod[t])\nsigma = sqrt(1 - alphas_cumprod[t])\n\n**SNR = (alpha / sigma)²**\n\nt 小 (低噪声) → alpha大, sigma小 → SNR大\nt 大 (高噪声) → alpha小, sigma大 → SNR小" as SNR_COMPUTE #FFE0B2
+
+    rectangle "**Min-SNR-γ 权重**\n//common.py:4725-4733//\n\nmse_loss_weights = min(SNR, γ) / SNR\n\n当 SNR > γ 时:\n  权重 = γ / SNR < 1 → **压低**\n  低噪声步的 loss 被衰减\n\n当 SNR < γ 时:\n  权重 = SNR / SNR = 1 → **不变**\n  高噪声步的 loss 保持原样\n\n**效果: 削弱低噪声步的主导地位**" as SNR_WEIGHT #FFCC80
+
+    rectangle "**应用权重**\n//common.py:4736-4737//\n\nmse_loss_weights = weights.view(-1, 1, 1, 1)\nloss = loss * mse_loss_weights\n\n**view(-1,1,1,1):** 把[B]变成[B,1,1,1]\n通过 broadcast 乘到 [B,4,128,128]\n同一张图所有像素用同一个权重" as SNR_APPLY #FFB74D
+}
+
+note right of SNR_COMPUTE
+  **为什么需要 SNR 加权?**
+
+  没有加权时:
+  - 低噪声步 (t≈0): 噪声少, 误差小,
+    但 MSE 的梯度也小 → 贡献低
+  - 高噪声步 (t≈999): 噪声大, 误差大,
+    MSE 梯度大 → **主导训练方向**
+
+  问题: 高噪声步的信息量其实**更低**
+  (几乎是纯噪声, 学不到什么有用的)
+  但它占据了大部分梯度资源
+
+  **Min-SNR-γ 的思路:**
+  你 SNR 太低(噪声太大)? 不压你
+  你 SNR 很高(噪声很小)? 压低你的 loss
+  → 让高低噪声步的**梯度贡献更均衡**
+end note
+
+note right of SNR_WEIGHT
+  **γ 的选择:**
+
+  γ = 5 (常用默认值)
+
+  SNR=100 (低噪声) → 权重=5/100=0.05
+  SNR=5   (中等)   → 权重=5/5=1.0
+  SNR=0.1 (高噪声) → 权重=0.1/0.1=1.0
+
+  **低噪声步被压到5%, 高噪声步不变**
+  这和之前讨论的语义偏置是同一维度:
+  都在调控"哪些时间步对训练贡献更大"
+
+  区别: SNR加权改的是**loss权重**
+  语义偏置改的是**采样概率**
+  两者可以叠加使用
+end note
+
+' ============================================================
+' 阶段F4: Conditioning Mask (区域加权)
+' ============================================================
+package "**阶段F4: Conditioning Mask (可选区域加权)**\n//common.py:4741-4763//" as PKG_MASK #FCE4EC {
+
+    rectangle "**Mask Loss**\n//common.py:4748-4755//\n\nif loss_mask_type == \"mask\":\n  mask = conditioning_pixel_values\n  mask = interpolate(mask, size=loss.shape)\n  mask = mask / 2 + 0.5  // 归一化到[0,1]\n  **loss = loss * mask**\n\n**白色区域:** mask≈1 → loss正常\n**黑色区域:** mask≈0 → loss被消除\n\n典型用途: 只关注人物,\n忽略背景区域的 loss" as MASK_LOSS #F8BBD0
+
+    rectangle "**Segmentation Mask**\n//common.py:4756-4763//\n\nif loss_mask_type == \"segmentation\":\n  按概率 random.random() < p 决定是否应用\n  mask = sum(RGB) / 3 → 灰度\n  mask = (mask > 0) → 二值化\n  **loss = loss * mask**\n\n**只在部分step生效 (概率控制)**\n避免模型完全忘记背景" as SEG_LOSS #EC407A
+}
+
+note right of MASK_LOSS
+  **区域加权的意义:**
+
+  训练人物 LoRA 时,
+  背景对你毫无价值,
+  但 UNet 会花大量梯度去拟合背景噪声
+
+  Mask Loss: 直接把背景的 loss 清零
+  → 所有梯度都集中在人物区域
+  → 效率大幅提升, 品质更好
+
+  **和 SNR 加权是正交的:**
+  SNR 控制"哪些时间步更重要"
+  Mask 控制"哪些空间区域更重要"
+  两者可以同时生效
+end note
+
+' ============================================================
+' 阶段F5: 最终聚合
+' ============================================================
+package "**阶段F5: Loss 聚合**\n//common.py:4765-4769//" as PKG_AGGREGATE #E8EAF6 {
+
+    rectangle "**两步聚合**\n//L4765//\nloss = loss.mean(dim=list(range(1,...)))\n  [B, 4, 128, 128] → [B]\n  每张图一个标量 loss\n\n//L4768//\nloss = loss.mean()\n  [B] → 标量\n  整个 batch 的平均 loss\n\n**这个标量就是反向传播的起点**" as AGGREGATE #C5CAE9
+}
+
+note right of AGGREGATE
+  **为什么两步 mean, 不直接一步?**
+
+  如果直接 loss.mean():
+    所有维度一起平均
+    大分辨率图片的像素多
+    → 分辨率高的图对 loss 贡献更大
+
+  先 mean(dim=[1,2,3]):
+    每张图内部先平均
+    → 每张图不管分辨率
+       都贡献一个等权标量
+  再 mean(dim=0):
+    图间平均
+
+  **保证每张图对梯度的贡献相等**
+  不被分辨率差异干扰
+end note
+
+' ============================================================
+' 阶段F6: 辅助 Loss
+' ============================================================
+package "**阶段F6: 辅助 Loss (Auxiliary)**\n//trainer.py:5528-5532// + //common.py:4777-4812//" as PKG_AUX #F3E5F5 {
+
+    rectangle "**辅助Loss叠加**\n//trainer.py:5527-5532//\n\ndiffusion_loss = loss.clone()  // 保留主loss用于日志\nloss, aux_logs = model.auxiliary_loss(\n    model_output, prepared_batch, loss\n)\n\n**内部做了什么:**\n① TwinFlow Loss (如果启用)\n  loss = loss + twin_loss\n② LayerSync Regularizer (如果启用)\n  loss = loss + layersync_loss\n③ Distillation Loss (如果启用)\n  loss = loss + distill_loss\n\n**SDXL基础训练: 这三个都不触发**\nloss 保持不变" as AUX_LOSS #CE93D8
+}
+
+note right of AUX_LOSS
+  **辅助Loss的设计模式:**
+
+  主Loss (diffusion_loss) 永远存在
+  辅助Loss 按需叠加:
+    loss = main + α*aux1 + β*aux2 + ...
+
+  每种辅助Loss有自己的开关和权重系数
+  **对SDXL基础训练: 纯MSE, 没有辅助项**
+  但框架预留了扩展点
+
+  **loss.clone() 的作用:**
+  保存一份主loss副本用于日志
+  后续辅助loss只改 loss 变量
+  diffusion_loss 记录的是纯扩散loss
+end note
+
+' ============================================================
+' 阶段G: 反向传播
+' ============================================================
+package "**阶段G: 反向传播**\n//trainer.py:5550-5556//" as PKG_BACKWARD #FFEBEE {
+
+    rectangle "**accelerator.backward(loss)**\n//trainer.py:5556//\n\n**不是直接 loss.backward()!**\n\nHuggingFace Accelerator 封装了:\n1. 混合精度: loss 自动 unscale\n2. 分布式: 梯度跨GPU自动同步\n3. 梯度累积: 自动除以累积步数\n4. DeepSpeed: 走 DeepSpeed 的反向\n\n**一行代码, 四重封装**\n这就是为什么用 Accelerator 而不是裸 PyTorch" as BACKWARD #FFCDD2
+}
+
+note right of BACKWARD
+  **反向传播实际做了什么:**
+
+  从 loss 标量开始,
+  沿计算图**反向**走:
+
+  loss → MSE → UNet输出 → 每层Conv/Attention
+    → to_q/to_k/to_v/to_out (LoRA在这里)
+    → ... → 第一层
+
+  **每个有 requires_grad=True 的参数**
+  **都得到一个 .grad 张量**
+
+  全量微调: 所有 UNet 参数的 .grad
+  LoRA微调: 只有 LoRA 矩阵的 .grad
+  (因为原始权重 requires_grad=False)
+
+  **梯度精度:**
+  //trainer.py:5560-5566//
+  如果配置了 gradient_precision=fp32:
+  反向传播后, 把所有 .grad 转为 fp32
+  → 避免 bf16 梯度在累积时精度丢失
+end note
+
+' ============================================================
+' 阶段H: 梯度裁剪 + 优化器步进
+' ============================================================
+package "**阶段H: 梯度裁剪 + 权重更新**\n//trainer.py:5568-5681//" as PKG_OPTIM #E0F2F1 {
+
+    rectangle "**梯度裁剪**\n//trainer.py:5569-5643//\n\nif sync_gradients and max_grad_norm > 0:\n\n  **norm clipping (默认):**\n  clip_grad_norm_(params, max_grad_norm)\n  → 如果梯度L2范数 > max_grad_norm\n    → 等比例缩小所有梯度\n    → 保持方向不变, 只限制步长\n\n  **value clipping (可选):**\n  clip_grad_value_(params, max_grad_norm)\n  → 每个梯度元素独立截断\n\n**防止梯度爆炸导致训练崩溃**" as GRAD_CLIP #B2DFDB
+
+    rectangle "**优化器步进**\n//trainer.py:5665//\n\nself.optimizer.step()\n\n**用梯度更新模型权重:**\nθ_new = θ_old - lr * optimizer(grad)\n\n常用优化器:\n  AdamW: 带权重衰减的 Adam\n  Prodigy: 自适应学习率\n  Adafactor: 低内存 Adam 变体" as OPTIM_STEP #80CBC4
+
+    rectangle "**梯度清零**\n//trainer.py:5679//\n\noptimizer.zero_grad(\n    set_to_none=True  // ← 不是设为0, 是设为None\n)\n\n**为什么 set_to_none=True?**\n设为0: 保留 .grad 张量, 占内存\n设为None: 释放 .grad 张量\n→ 节省显存, 下次反向传播重新分配\n\n**一个 step 的完整循环结束**\n回到阶段C, 取下一个 batch" as ZERO_GRAD #4DB6AC
+}
+
+note right of GRAD_CLIP
+  **梯度裁剪的直觉:**
+
+  正常训练: grad_norm ≈ 0.1~1.0
+  偶尔异常: grad_norm 突然飙到 100+
+  (可能遇到了离群样本/数值不稳定)
+
+  没有裁剪: 权重被大幅更新
+  → 模型"跳"到一个坏的状态
+  → 可能永远恢复不了 (训练崩溃)
+
+  有裁剪 (max_grad_norm=1.0):
+  grad_norm=100 → 缩小到1.0
+  方向不变, 但步长被限制
+  → 模型最多走一小步, 不会跳飞
+
+  **特例:**
+  Prodigy/StableAdamW 自带裁剪机制
+  → //L5571// 跳过外部裁剪
+end note
+
+note left of OPTIM_STEP
+  **梯度累积:**
+  //trainer.py:5645-5653//
+
+  如果 gradient_accumulation_steps=4:
+  连续4个batch的梯度先**累加**
+  第4个batch后才执行 optimizer.step()
+
+  效果 = batch_size × 4
+  但每次只需要1个batch的显存
+
+  **Accelerator 自动处理:**
+  前3个batch: backward()只累加梯度
+  第4个batch: backward()后同步梯度
+  + optimizer.step() + zero_grad()
+end note
+
+' ============================================================
+' 连接线
+' ============================================================
+UNET_OUTPUT -down-> TARGET_EPSILON : "model_pred\n[B,4,128,128]"
+
+TARGET_EPSILON -down-> LOSS_TYPE : "target = noise\n[B,4,128,128]"
+
+LOSS_TYPE -down-> LOSS_L2 : "默认 l2"
+LOSS_TYPE -down-> LOSS_HUBER : "可选 huber"
+LOSS_HUBER -right-> LOSS_SCHEDULED : "huber_c 可动态调整"
+
+LOSS_L2 -down-> SNR_COMPUTE : "loss [B,4,128,128]\nreduction=none"
+
+SNR_COMPUTE -down-> SNR_WEIGHT
+SNR_WEIGHT -down-> SNR_APPLY
+
+SNR_APPLY -down-> MASK_LOSS : "加权后的 loss"
+MASK_LOSS -right-> SEG_LOSS
+
+MASK_LOSS -down-> AGGREGATE
+AGGREGATE -down-> AUX_LOSS : "标量 loss"
+AUX_LOSS -down-> BACKWARD : "最终 loss"
+
+BACKWARD -down-> GRAD_CLIP
+GRAD_CLIP -down-> OPTIM_STEP
+OPTIM_STEP -down-> ZERO_GRAD
+
+ZERO_GRAD -right-> UNET_OUTPUT : "**回到阶段C**\n取下一个batch\n重复整个循环"
+
+' ============================================================
+' 左侧: Loss 权重叠加顺序总结
+' ============================================================
+note left of LOSS_TYPE
+  **SDXL Loss 的权重叠加链:**
+
+  ① 基础 Loss:
+     MSE 或 Huber (逐像素)
+
+  ② × SNR 权重 (逐样本):
+     压低低噪声步的贡献
+     "哪些时间步更重要"
+
+  ③ × Mask 权重 (逐像素):
+     消除无关区域
+     "哪些空间位置更重要"
+
+  ④ + 辅助 Loss (标量):
+     TwinFlow/LayerSync等
+     "额外的正则化约束"
+
+  **这四层是完全正交的:**
+  每一层控制不同维度
+  可以自由组合
+end note
+
+' ============================================================
+' 底部: 完整链路总结
+' ============================================================
+note bottom of ZERO_GRAD
+  **一个 SDXL 训练 step 的完整 Loss → Update 链路:**
+
+  UNet输出 predicted_noise [B,4,128,128]
+    │
+    ├─ target = 真实噪声 (EPSILON模式)
+    │
+    ├─ loss = MSE(pred, target)  // 逐像素, reduction=none
+    │
+    ├─ × SNR 权重  // min(SNR,γ)/SNR, 逐样本
+    │
+    ├─ × Mask 权重  // 可选, 逐像素
+    │
+    ├─ mean() → 标量
+    │
+    ├─ + 辅助 loss  // SDXL基础训练无辅助
+    │
+    ├─ accelerator.backward(loss)  // 反向传播, 算梯度
+    │
+    ├─ clip_grad_norm_()  // 梯度裁剪, 防爆炸
+    │
+    ├─ optimizer.step()  // 更新权重
+    │
+    └─ zero_grad()  // 清零, 准备下一步
+
+  **整个链路的核心思想:**
+  先算逐元素loss → 层层加权控制"什么更重要" → 聚合成标量 → 反向传播 → 安全更新
+end note
+
+@enduml

@@ -1,0 +1,397 @@
+@startuml Flux_Encoding_and_Forward
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontName "Microsoft YaHei"
+skinparam defaultFontSize 11
+skinparam ArrowThickness 2
+skinparam RoundCorner 8
+skinparam PackageBorderThickness 2
+skinparam NoteBackgroundColor #FFFFDD
+skinparam NoteBorderColor #999999
+
+title **Flux 系列训练链路 — 编码 → 时间步 → 前向**\nFlux 1.x (CLIP-L + T5) vs Flux 2.x (Mistral-3)\n代码: flux/model.py, flux2/model.py, common.py
+
+' ============================================================
+' 阶段A: 图像编码 — VAE
+' ============================================================
+package "**阶段A: 图像编码 (VAE)**" as PKG_VAE #E8F5E9 {
+
+    rectangle "**原始图片**\n\n1024×1024 RGB\n[B, 3, 1024, 1024]" as RAW_IMAGE #FFFFFF
+
+    rectangle "**Flux 1: AutoencoderKL**\n\nVAE.encode(image)\n空间压缩 8× + **16通道**\n\n输出: [B, **16**, 128, 128]\n\n16通道 = 高信息带宽\n能编码更丰富的细节和色彩" as VAE_FLUX1 #C8E6C9
+
+    rectangle "**Flux 2: AutoencoderKLFlux2 ★**\n//flux2/autoencoder.py//\n\n全新VAE架构\n空间压缩 **16×** + **128通道**\n(8× spatial + 2× pixel shuffle)\n\n输出: [B, **128**, **64**, **64**]\n\n**pixel shuffle:** 在VAE内部\n把2×2空间折叠到通道维度\n空间更小但通道极宽" as VAE_FLUX2 #A5D6A7
+}
+
+note right of VAE_FLUX1
+  **Flux 1 vs Flux 2 VAE 对比:**
+
+  | | Flux 1 | Flux 2 |
+  |---|---|---|
+  | VAE类 | AutoencoderKL | AutoencoderKLFlux2 |
+  | 通道 | 16 | **128** |
+  | 空间 | 128×128 | **64×64** |
+  | 总元素 | 16×128×128=262K | 128×64×64=**524K** |
+  | 压缩率 | 8× | **16×** |
+
+  Flux 2 的信息总量是 Flux 1 的 **2倍**
+  但空间更压缩, 通道更宽
+  → Transformer 处理的序列更短 (1024 vs 4096)
+  → 计算效率更高
+end note
+
+note right of VAE_FLUX2
+  **pixel shuffle 的思路:**
+
+  普通下采样: 空间缩小, 信息丢失
+  pixel shuffle: 空间缩小, 信息搬到通道
+
+  2×2 的空间区域 → 1个像素, 4倍通道
+  类似 Flux 1 的 pack_latents
+  但 Flux 2 **在VAE内部**就做了
+  不需要模型外的额外pack步骤
+end note
+
+' ============================================================
+' 阶段A2: Latent Packing
+' ============================================================
+package "**阶段A2: Latent Packing → Patch序列**" as PKG_PACK #E8F5E9 {
+
+    rectangle "**Flux 1: pack_latents()**\n//flux/__init__.py:25-30//\n\n[B, 16, 128, 128]\n  ↓ 每2×2像素一组\n[B, 16, 64, 2, 64, 2]\n  ↓ permute + reshape\n**[B, 4096, 64]**\n\n4096个patch, 每个64维\n(16通道 × 2×2空间 = 64)" as PACK_FLUX1 #81C784
+
+    rectangle "**Flux 2: pack_latents()**\n//flux2/__init__.py//\n\n[B, 128, 64, 64]\n  ↓ 每2×2像素一组\n[B, 128, 32, 2, 32, 2]\n  ↓ permute + reshape\n**[B, 1024, 512]**\n\n1024个patch, 每个512维\n(128通道 × 2×2空间 = 512)" as PACK_FLUX2 #66BB6A
+}
+
+note right of PACK_FLUX1
+  **为什么要Pack?**
+
+  Flux 用 Transformer, 不是 UNet
+  Transformer 处理的是**序列**
+  Pack = 把2D latent切成patch排成一列
+
+  **两代的序列长度对比:**
+  Flux 1: **4096** tokens (64×64 patches)
+  Flux 2: **1024** tokens (32×32 patches)
+
+  Flux 2 序列短 4 倍
+  → Self-Attention 计算量减少 **16 倍**
+  (attention是O(n²))
+  → 这是 Flux 2 效率提升的关键来源
+end note
+
+' ============================================================
+' 阶段A3: 位置编码 — img_ids
+' ============================================================
+package "**阶段A3: 位置编码 (img_ids)**" as PKG_POS #E8F5E9 {
+
+    rectangle "**prepare_latent_image_ids()**\n\n为每个patch生成坐标 (flag, y, x):\n\n**Flux 1:** img_ids [4096, 3]\n  64×64 grid, 每个patch一个(y,x)\n\n**Flux 2:** img_ids [1024, 3]\n  32×32 grid, 每个patch一个(y,x)\n\n进入 Transformer 后用 **RoPE**\n(旋转位置编码) 影响 attention score\n→ 近的patch互相关注更多\n→ 远的patch关注度自然衰减" as IMG_IDS #4CAF50
+}
+
+' ============================================================
+' 阶段B: 文本编码 — Flux 1 vs Flux 2 的最大差异
+' ============================================================
+package "**阶段B: 文本编码 — 两代最大差异**" as PKG_TEXT #E3F2FD {
+
+    rectangle "**═══ Flux 1 文本编码 ═══**" as FLUX1_TEXT_HEADER #BBDEFB
+
+    rectangle "**CLIP-L/14 (池化输出)**\n//flux/model.py:93-99//\n\nprompt → CLIPTokenizer (77 tokens)\n       → CLIPTextModel\n       → **pooled_prompt_embeds [768]**\n\n只取池化! 序列嵌入不用\n作用: 全局语义锚点" as CLIP_L #90CAF9
+
+    rectangle "**T5-XXL v1.1 (序列输出)**\n//flux/model.py:100-107//\n\nprompt → T5TokenizerFast (最多**512** tokens)\n       → T5EncoderModel\n       → **prompt_embeds [512, 4096]**\n\n**T5是纯语言模型, 不是CLIP**\n语义理解能力强:\n  复杂语法/逻辑/空间关系/属性绑定" as T5_XXL #64B5F6
+
+    rectangle "**═══ Flux 2 文本编码 ═══**" as FLUX2_TEXT_HEADER #CE93D8
+
+    rectangle "**Mistral-3 24B ★ 单编码器**\n//flux2/model.py:50-52, 144-151//\n\n**Mistral-Small-3.1-24B-Instruct**\n一个 instruction-tuned 的大语言模型\n\nprompt → Mistral Tokenizer (最多**512** tokens)\n       → Mistral-3 Forward\n       → 从第 **10, 20, 30** 层抽取特征\n       → 拼接成 prompt_embeds\n\n**不用CLIP, 不用T5**\n单个LLM完成所有文本理解\n\n系统提示: \"You are an AI that reasons\nabout image descriptions...\"" as MISTRAL #B39DDB
+}
+
+note right of CLIP_L
+  **Flux 1 为什么保留 CLIP-L?**
+
+  T5 擅长理解语义
+  但不是图文对比学习训练的
+  → 全局"图文匹配度"表征不够好
+
+  CLIP-L 是图文对比训练的
+  pooled output = "文字对应什么样的图"
+  → 做**全局条件向量**比T5更合适
+
+  **分工:**
+  CLIP-L pooled → 全局语义锚点
+  T5 sequence → 逐token细节指令
+end note
+
+note right of T5_XXL
+  **T5 vs CLIP:**
+
+  **CLIP:** 对比学习 (图文配对)
+    擅长: 风格/主题的粗粒度匹配
+    弱点: 不理解复杂语法/逻辑
+
+  **T5:** 语言建模 (seq2seq)
+    擅长: 语法/逻辑/空间关系/属性绑定
+    弱点: 没见过图片
+
+  两者互补: T5提供精确语义指令,
+  CLIP-L提供粗粒度视觉锚定
+end note
+
+note right of MISTRAL
+  **Flux 2 为什么换成 Mistral?**
+
+  **T5的局限:**
+    2020年的模型, 参数 11B
+    不是 instruction-tuned
+    对复杂指令理解有限
+
+  **Mistral-3 的优势:**
+    2025年的模型, 参数 24B
+    instruction-tuned (理解指令)
+    **多层特征抽取** (第10/20/30层)
+    浅层→语法/词汇, 深层→语义/逻辑
+    拼接后得到更丰富的文本表征
+
+  **多层抽取 vs 单层:**
+  T5/CLIP: 只取最后一层 (或倒数第二层)
+  Mistral: 取3个不同深度的层
+    → 同时包含低级和高级语义
+
+  **代价:** 24B 的文本编码器
+  比 T5-XXL (11B) 大两倍多
+  但推理时可以量化/卸载
+end note
+
+' ============================================================
+' 阶段B2: 文本位置编码 — txt_ids
+' ============================================================
+package "**阶段B2: 文本位置编码 (txt_ids)**" as PKG_TXT_POS #E3F2FD {
+
+    rectangle "**txt_ids = zeros(seq_len, 3)**\n\n文本token的位置ID **全是零!**\n\n文本没有空间位置\n全零 = 告诉RoPE \"不需要空间编码\"\n\n在Joint Attention中:\n  图像token之间: 受空间距离影响\n  文本token之间: 不受空间影响\n  图文之间: 只靠语义相似度\n\nFlux 1 和 Flux 2 都是这个设计" as TXT_IDS #42A5F5
+}
+
+' ============================================================
+' 阶段C: 时间步 + 加噪 (Flow Matching)
+' ============================================================
+package "**阶段C: 时间步 + 加噪 (Flow Matching)**\n//common.py// — Flux 1/2 都走此分支" as PKG_TIMESTEP #FFF3E0 {
+
+    rectangle "**采样噪声**\n//common.py:4339//\n\nnoise = torch.randn_like(latents)\n+ offset_noise (可选)\n\nFlux 1/2 噪声采样逻辑相同" as NOISE #FFE0B2
+
+    rectangle "**时间步采样: sample_flow_sigmas()**\n//common.py:3574//\n\n采样 sigma ∈ [0, 1]\n  σ=0: 纯干净图\n  σ=1: 纯噪声\n\n+ **Dynamic Shifting:**\n  mu = calculate_shift(seq_len)\n  sigma分布随图片大小动态调整\n\n  Flux 1: seq_len=4096 → shift较大\n  Flux 2: seq_len=1024 → shift较小\n  (不同 base/max_shift 参数)" as SIGMA #FFCC80
+
+    rectangle "**加噪: Flow Matching 线性插值**\n\n**x_t = (1 - σ) × x_0 + σ × noise**\n\n线性插值, 数学简洁:\n  σ=0: x_t = x_0 (纯干净)\n  σ=0.5: x_t = 各半\n  σ=1: x_t = noise (纯噪声)\n\n预测目标: **v = noise - latent**\n\"从干净到噪声的方向向量\"\n\nFlux 1/2 共享此逻辑" as ADD_NOISE #FFB74D
+}
+
+note right of SIGMA
+  **Dynamic Shifting 参数差异:**
+
+  **Flux 1:**
+  //scheduler_config.json//
+    base_image_seq_len: 256
+    max_image_seq_len: 4096
+    base_shift: 0.5
+    max_shift: 1.15
+
+  **Flux 2:**
+  //flux2/model.py:60-68//
+    base_image_seq_len: 256
+    max_image_seq_len: 4096
+    base_shift: 0.5
+    max_shift: 1.15
+    shift: 3.0
+
+  **sigma 会被shifted:**
+  图片越大 → seq_len越大
+  → shift越大 → sigma分布偏向高噪声
+  → 大图在高噪声区域训练更充分
+
+  这保证不同分辨率的图片
+  都能获得均衡的训练信号
+end note
+
+note left of ADD_NOISE
+  **Flow Matching 预测目标:**
+  //common.py:3513-3514//
+
+  target = noise - latent
+  "从干净到噪声的**方向向量**"
+
+  **直觉:**
+  "从干净图到纯噪声, 走了哪条路?"
+
+  比 epsilon 预测 (只预测噪声本身)
+  包含了更多**结构化信息**:
+  不只知道噪声是什么,
+  还知道噪声相对于干净图的关系
+end note
+
+' ============================================================
+' 阶段D: Guidance Embedding
+' ============================================================
+package "**阶段D: Guidance Embedding**\n//flux/model.py:553-575// + //flux2/model.py//" as PKG_GUIDANCE #F3E5F5 {
+
+    rectangle "**Guidance Scale 作为条件输入**\n\nFlux **不用** Classifier-Free Guidance!\n不需要每个step前向跑两次\n\n把 guidance_scale 作为**条件向量**\n直接输入 Transformer\n\n**constant模式:**\n  guidance = [3.5] × batch_size\n\n**random-range模式:**\n  guidance = random(min, max) per sample\n  训练时随机 → 推理时可自由调\n\n**Flux 2 klein 系列:**\n  guidance_embeds = False\n  不使用guidance嵌入\n\n**效果:** 推理速度 2× (不用跑两次)\n质量几乎不损失" as GUIDANCE #CE93D8
+}
+
+note right of GUIDANCE
+  **Flux 1 vs Flux 2 的 Guidance:**
+
+  **Flux 1 dev:**
+    guidance_embeds = True
+    需要传入 guidance 向量
+
+  **Flux 1 schnell:**
+    guidance_embeds = False
+    蒸馏模型, 不需要guidance
+
+  **Flux 2 dev:**
+    guidance_embeds = True
+    和 Flux 1 dev 相同
+
+  **Flux 2 klein (4B/9B):**
+    guidance_embeds = False
+    轻量级模型, 不需要
+
+  代码中的判断:
+  //flux/model.py:572//
+  if transformer_config.guidance_embeds:
+      guidance = tensor(scales)
+  else:
+      guidance = None
+end note
+
+' ============================================================
+' 阶段E: Transformer 前向
+' ============================================================
+package "**阶段E: Transformer 前向**" as PKG_FORWARD #FCE4EC {
+
+    rectangle "**═══ Flux 1: FluxTransformer2DModel ═══**\n//flux/transformer.py//\n\n输入:\n  hidden_states: [B, **4096**, 64]\n  encoder_hidden_states: [B, 512, 4096] (T5)\n  pooled_projections: [B, 768] (CLIP-L)\n  timestep: sigma ∈ [0,1]\n  guidance: guidance_scale 向量\n  img_ids / txt_ids: 位置编码\n\n**19 Double Stream Blocks**\n  图文分别处理 + 双向Joint Attention\n\n**38 Single Stream Blocks**\n  图文拼接 → 统一Self-Attention\n\n总: 57层, **~12B 参数**\n  inner_dim=3072, heads=24" as FLUX1_TRANSFORMER #F8BBD0
+
+    rectangle "**═══ Flux 2: Flux2Transformer2DModel ═══**\n//flux2/transformer.py//\n\n输入:\n  hidden_states: [B, **1024**, 512]\n  encoder_hidden_states: Mistral-3 多层特征\n  pooled_projections: Mistral pooled\n  timestep: sigma ∈ [0,1]\n  guidance: guidance_scale 向量 (dev only)\n  img_ids / txt_ids: 位置编码\n\n**Flux 2 dev:** 8 Double + 48 Single = 56层\n  inner_dim=**6144** (Flux1的2倍)\n  heads=**48**, joint_attn=**15360**\n  Transformer部分估计 **20-30B**\n  + Mistral-3 文本编码器 24B\n\n**Flux 2 klein-9b:** 8D+24S=32层, 9B\n**Flux 2 klein-4b:** 5D+20S=25层, 4B" as FLUX2_TRANSFORMER #EC407A
+}
+
+note right of FLUX1_TRANSFORMER
+  **Double Stream Block 内部:**
+
+  图像流和文本流分别计算 Q,K,V
+  然后**合并做Joint Attention:**
+
+  Q = [Q_img; Q_txt]
+  K = [K_img; K_txt]
+  V = [V_img; V_txt]
+  → softmax(Q×K^T/√d) × V
+
+  图像token可以看文本token
+  文本token也可以看图像token
+  **双向信息流动**
+
+  Single Stream Block:
+  直接 concat(img, txt) → Self-Attn
+  图文完全融合, 不再区分
+end note
+
+note right of FLUX2_TRANSFORMER
+  **Flux 2 的效率优势:**
+
+  **序列长度:**
+  Flux 1: 4096 img + 512 txt = **4608**
+  Flux 2: 1024 img + 512 txt = **1536**
+
+  Attention 是 O(n²):
+  4608² / 1536² = **9× 计算量差距**
+
+  **Flux 2 用更宽的隐藏层:**
+  inner_dim: 3072 → **6144** (2×)
+  heads: 24 → **48** (2×)
+  joint_attn_dim: 4096 → **15360** (3.75×)
+
+  **block数相近但每层宽度翻倍**
+  → Transformer 参数量约 Flux 1 的 **2-3倍**
+  + Mistral-3 (24B) 远大于 T5-XXL (11B)
+  → 整体参数量远超 Flux 1
+
+  但序列短4倍 → Attention O(n²) 省 16×
+  **每token计算更重, 但token更少**
+
+  **klein 系列进一步减小:**
+  更少的 block 层数
+  → 9B 和 4B 变体
+  适合显存受限的场景
+end note
+
+' ============================================================
+' 阶段F: Unpack + 输出
+' ============================================================
+package "**阶段F: Unpack + 输出**" as PKG_OUTPUT #E8EAF6 {
+
+    rectangle "**unpack_latents()**\nPack 的逆操作, 序列→2D\n\n**Flux 1:**\n  [B, 4096, 64] → [B, 16, 128, 128]\n\n**Flux 2:**\n  [B, 1024, 512] → [B, 128, 64, 64]\n\n返回: model_prediction\n→ 送入 Loss 计算 (共用 common.py 基类)" as UNPACK #C5CAE9
+}
+
+' ============================================================
+' → 后续
+' ============================================================
+rectangle "**→ 后续: Loss + 反向传播**\ntarget = noise - latent (Flow Matching)\nLoss/SNR加权/Mask/梯度裁剪等\n与 SDXL 共用 common.py 基类逻辑" as NEXT #E0E0E0
+
+' ============================================================
+' 连接线
+' ============================================================
+RAW_IMAGE -down-> VAE_FLUX1
+RAW_IMAGE -down-> VAE_FLUX2
+
+VAE_FLUX1 -down-> PACK_FLUX1 : "[B,16,128,128]"
+VAE_FLUX2 -down-> PACK_FLUX2 : "[B,128,64,64]"
+
+PACK_FLUX1 -down-> IMG_IDS : "[B,4096,64]"
+PACK_FLUX2 -down-> IMG_IDS : "[B,1024,512]"
+
+FLUX1_TEXT_HEADER -down-> CLIP_L
+CLIP_L -down-> T5_XXL
+FLUX2_TEXT_HEADER -down-> MISTRAL
+
+T5_XXL -down-> TXT_IDS : "Flux 1 embeds"
+MISTRAL -down-> TXT_IDS : "Flux 2 embeds"
+
+IMG_IDS -down-> NOISE
+TXT_IDS -down-> NOISE
+
+NOISE -down-> SIGMA
+SIGMA -down-> ADD_NOISE
+
+ADD_NOISE -down-> GUIDANCE
+
+GUIDANCE -down-> FLUX1_TRANSFORMER : "Flux 1 路径"
+GUIDANCE -down-> FLUX2_TRANSFORMER : "Flux 2 路径"
+
+FLUX1_TRANSFORMER -down-> UNPACK
+FLUX2_TRANSFORMER -down-> UNPACK
+
+UNPACK -down-> NEXT
+
+' ============================================================
+' 底部: Flux 1 vs Flux 2 总结
+' ============================================================
+note bottom of NEXT
+  **Flux 1 vs Flux 2 架构总结:**
+
+  | | Flux 1 (~12B) | Flux 2 dev (~20-30B+24B LLM) | Flux 2 klein (4-9B) |
+  |---|---|---|---|
+  | **VAE** | AE-KL, 16ch | **AE-KLFlux2, 128ch** | 同 dev |
+  | **空间压缩** | 8× | **16×** | 同 dev |
+  | **序列长度** | 4096 | **1024** (4×短) | 同 dev |
+  | **token维度** | 64 | **512** (8×宽) | 同 dev |
+  | **文本编码** | CLIP-L + T5-XXL | **Mistral-3 24B** 单编码器 | Qwen3 |
+  | **多层特征** | 否 (T5最后层) | **是** (第10/20/30层) | 是 (第9/18/27层) |
+  | **Blocks** | 19 double + 38 single | 8 double + 48 single | 5-8 double + 20-24 single |
+  | **Guidance** | 嵌入向量 | 嵌入向量 | **无** |
+
+  **核心演进方向:**
+  Flux 1 → Flux 2:
+    - 更强的文本编码器 (T5 → Mistral/Qwen)
+    - 更高效的视觉编码 (短序列+宽通道)
+    - 更灵活的模型尺寸 (klein 4B/9B)
+    - 多层文本特征抽取
+
+  **SimpleTuner 的抽象:**
+  Flux 1 和 Flux 2 都继承 ImageModelFoundation
+  共享: prepare_batch / loss / validation
+  差异: VAE类/文本编码器/Transformer结构
+end note
+
+@enduml
