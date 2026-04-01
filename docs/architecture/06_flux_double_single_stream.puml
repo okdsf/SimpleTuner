@@ -51,6 +51,49 @@ note right of TEMB
   - 高噪声步: 某些层的gate大 (需要大幅去噪)
   - 低噪声步: 那些层的gate小 (精修阶段不需要)
   - 不同guidance: 调整哪些层更活跃
+
+  ════════════════════════════════════════
+  **★ gate 公式逐层拆解: 沿数据流方向剥洋葱**
+  ════════════════════════════════════════
+
+  完整公式: gate = chunk( **Linear**( **SiLU**(temb) ) )[slice]
+
+  **第①层: temb — 基底信号**
+  输入是"当前去噪状态"的浓缩向量 [B, dim]
+  它告诉模型: 现在是纯噪声的第1000步,
+  还是快出清晰图像的第10步
+
+  **第②层: SiLU(temb) — 非线性预处理**
+  <latex>f(x) = x \cdot \sigma(x) = \frac{x}{1 + e^{-x}}</latex>
+  **SiLU 不是gate的激活函数!**
+  它是对 temb 的"非线性滤镜":
+    让模型更平滑地区分不同时间步的特征
+    负值被柔和地压制, 正值被轻微放大
+  处理完后把结果交给下一层, 使命就结束了
+
+  **第③层: Linear — 无界的线性投影**
+  <latex>y = Wx + b</latex>
+  W 和 b 是自由学习的实数
+  → 输出值域 <latex>(-\infty, +\infty)</latex>
+  **关键: Linear之后没有任何激活函数限制输出!**
+  不像 LSTM 用 Sigmoid 把门控压到 [0,1]
+  这里直接原封不动地输出
+
+  **第④层: chunk — 高效切片**
+  为了效率, 不跑6次独立的Linear
+  而是一次性输出6倍长的向量, 再均等切开:
+  emb.chunk(6) → shift_msa | scale_msa | **gate_msa**
+                  shift_mlp | scale_mlp | **gate_mlp**
+  gate 就是其中的一个切片, 继承了Linear的无界性
+
+  **合在一起看:**
+  temb → [SiLU非线性预处理] → [Linear无界投影] → [切片取gate]
+  全程没有 Sigmoid/Tanh 限制 → **gate 是自由的缩放因子**
+
+  **★ 这和传统门控的本质区别:**
+  传统 (LSTM): gate = **Sigmoid**(Wx+b) ∈ **[0, 1]** → 只能开/关
+  Flux adaLN: gate = **Linear**(SiLU(temb)) ∈ **(-∞, +∞)** → 能开/关/放大
+  少了一个 Sigmoid, 从"开关"升级为"连续调节旋钮"
 end note
 
     rectangle "**RoPE: 旋转位置编码 ★ 详解**\n//L709-711//\n\nids = cat(txt_ids, img_ids)  // [4608, 3]\nimage_rotary_emb = pos_embed(ids)\n\n**Step 1: 构建位置ID**\n//transformer.py:1010-1026//\n\n  txt_ids = zeros(512, 3)  // 文本: 全零, 没有空间位置\n  img_ids = zeros(H/2, W/2, 3):\n    img_ids[..., 0] = 0           // 第0维: 预留(Flux1恒为0)\n    img_ids[..., 1] = arange(H/2) // 第1维: **y坐标** (行号)\n    img_ids[..., 2] = arange(W/2) // 第2维: **x坐标** (列号)\n  → reshape为 [4096, 3]\n\n**Step 2: 对每个维度独立生成旋转频率**\n//FluxPosEmbed.forward() — diffusers/embeddings.py:1245//\n\n  for i in range(3):  // 3个轴\n    cos_i, sin_i = get_1d_rotary_pos_embed(\n      dim=axes_dim[i],  // Flux1: (16, 56, 56)\n      pos=ids[:, i],     // 该轴的坐标值\n      theta=10000\n    )\n  freqs_cos = cat([cos_0, cos_1, cos_2])  // [4608, 128]\n  freqs_sin = cat([sin_0, sin_1, sin_2])  // [4608, 128]\n\n**Step 3: 在Attention中旋转Q和K**\n//FluxAttnProcessor2_0, L150-151//\n\n  Q = apply_rotary_emb(Q, (freqs_cos, freqs_sin))\n  K = apply_rotary_emb(K, (freqs_cos, freqs_sin))" as ROPE #5C6BC0
@@ -176,13 +219,13 @@ end note
 ' ============================================================
 package "**第一阶段: Double Stream Blocks × 19**\n//transformer.py:753-850//\nFluxTransformerBlock" as PKG_DOUBLE #FCE4EC {
 
-    rectangle "**两条独立的流, 各自有独立的 Norm 和 FFN**\n//transformer.py:302-304, 324-328//\n\n**图像流:**\n  norm1        → AdaLayerNormZero(dim)\n  norm2 + ff   → LayerNorm + FeedForward\n\n**文本流:**\n  norm1_context → AdaLayerNormZero(dim)\n  norm2_context + ff_context → LayerNorm + FeedForward\n\n**但共享同一个 Attention 模块!**\n  self.attn → 一个 Attention 实例\n  内部有两套投影: to_q/k/v + add_q/k/v_proj" as DOUBLE_INIT #F8BBD0
+    rectangle "**两条独立的流, 各自有独立的 Norm 和 FFN**\n\n**Flux 1:** //transformer.py:302-304, 324-328//\n**图像流:**\n  norm1 → **AdaLayerNormZero**(dim)  // 内置SiLU+Linear调制\n  norm2 → LayerNorm  +  ff → **FeedForward** (GELU, 4x升维)\n**文本流:**\n  norm1_context → **AdaLayerNormZero**(dim)\n  norm2_context → LayerNorm  +  ff_context → **FeedForward** (GELU)\n**Attention:**\n  self.attn → Attention + **FluxAttnProcessor2_0**\n  内部两套投影: to_q/k/v + add_q/k/v_proj\n\n**Flux 2:** //flux2/transformer.py:528-561//\n**图像流:**\n  norm1 → **nn.LayerNorm**(dim)  // 普通LN, 调制从外部传入\n  norm2 → LayerNorm  +  ff → **Flux2FeedForward** (SwiGLU, 3x升维)\n**文本流:**\n  norm1_context → **nn.LayerNorm**(dim)\n  norm2_context → LayerNorm  +  ff_context → **Flux2FeedForward** (SwiGLU)\n**Attention:**\n  self.attn → **Flux2Attention** + **Flux2AttnProcessor**\n  同样两套投影, 但QK Norm用独立模块(非attn内置rms_norm)\n\n**两版本的拓扑结构完全相同:**\n两条流 × 各自norm+FFN × 共享一个Attention\n**但组件类型全换了: Norm方式/FFN激活/Attention后端**" as DOUBLE_INIT #F8BBD0
 
-    rectangle "**Step 1: 条件调制 ★ Flux1 vs Flux2 关键差异**\n\n**Flux 1:** //transformer.py:342-346//\n  **AdaLayerNormZero** — 每个block**内部自带**temb投影\n  norm_img, gate_msa, shift, scale, gate_mlp\n      = norm1(hidden_states, emb=**temb**)\n  每个block有独立的norm1权重\n  → 每层可以**独立学习**怎么响应temb\n\n**Flux 2:** //flux2/transformer.py:574-576//\n  **普通LayerNorm + 外部共享调制**\n  (shift, scale, gate) = **double_stream_modulation_img**(temb)\n  norm_img = LayerNorm(hidden_states)\n  norm_img = (1 + scale) × norm_img + shift\n  所有double block **共享同一组**调制权重!\n  → 参数更少, 但所有层响应temb的方式相同" as DOUBLE_NORM #F48FB1
+    rectangle "**Step 1: 条件调制 ★ Flux1 vs Flux2 关键差异**\n\n**Flux 1:** //transformer.py:342-346//\n  **AdaLayerNormZero** — 每个block**内部自带**temb投影\n  //diffusers/models/normalization.py//\n  **门控函数内部实现:**\n    emb = **Linear**(dim→6×dim)( **SiLU**(temb) )\n    shift_msa, scale_msa, **gate_msa**,\n    shift_mlp, scale_mlp, **gate_mlp** = emb.chunk(**6**, dim=1)\n    x = LayerNorm(x) × (1+scale_msa) + shift_msa\n    return x, gate_msa, shift_mlp, scale_mlp, gate_mlp\n  **每个block有独立的 Linear(dim→6×dim) 权重!**\n  19层×2流 = **38组独立的 SiLU→Linear 投影**\n  → 每层可以**独立学习**怎么响应temb\n  gate 形状: [B, dim], 使用时需 .unsqueeze(1)\n\n**Flux 2:** //flux2/transformer.py:680-696, 791-794//\n  **Flux2Modulation** — 全局**共享**调制模块\n  **门控函数内部实现:**\n    mod = **Linear**(dim→dim×3×n)( **SiLU**(temb) )\n    if mod.ndim == 2: mod = mod.unsqueeze(1)  // → [B,**1**,dim×3×n]\n    chunks = mod.chunk(3×n, dim=-1)\n    return ((shift_msa,scale_msa,**gate_msa**),(shift_mlp,scale_mlp,**gate_mlp**))\n  **整个模型只有3个Modulation实例:**\n    double_stream_modulation_**img** (mod_param_sets=2)\n    double_stream_modulation_**txt** (mod_param_sets=2)\n    single_stream_modulation (mod_param_sets=1)\n  **所有double block收到完全相同的gate值!**\n  gate 形状: [B, **1**, dim], 无需unsqueeze直接乘\n\n**★ 两者的gate激活函数本质相同:**\n  gate = Linear( SiLU(temb) ) 的分片\n  **没有sigmoid/tanh! gate是无界的原始线性输出**\n  SiLU作用于temb(输入), 不是gate(输出)\n  gate ∈ (-∞, +∞), 但训练中趋向 [0, ~2]" as DOUBLE_NORM #F48FB1
 
     rectangle "**Step 2: Joint Attention ★ 灵魂所在**\n//transformer.py:355-360//\n→ FluxAttnProcessor2_0\n//transformer.py:95-190//\n\nattn_output, context_attn_output = self.attn(\n    hidden_states = norm_img,\n    encoder_hidden_states = norm_txt,\n    image_rotary_emb = rope,\n)\n\n**展开见右侧详解 →**" as DOUBLE_ATTN #EC407A
 
-    rectangle "**Step 3: 图像流后处理 — 门控 + FFN + 残差流**\n//transformer.py:367-378//\n\n**── 第一次残差: Attention ──**\nattn_output = **gate_msa** × attn_output  // 门控缩放\nhidden_states = hidden_states **+** attn_output  // 残差连接\n\n**── FFN (FeedForward) ──**\nnorm_img = LayerNorm(hidden_states)\nnorm_img = norm_img × (1 + **scale_mlp**) + **shift_mlp**  // temb调制\nff_output = **FeedForward**(norm_img):\n  Linear(3072 → **12288**)  // 4倍升维\n  + GELU(approximate=\"tanh\")  // 非线性激活\n  + Linear(**12288** → 3072)  // 降回原维\n\n**── 第二次残差: FFN ──**\nff_output = **gate_mlp** × ff_output  // 门控缩放\nhidden_states = hidden_states **+** ff_output  // 残差连接" as DOUBLE_IMG_POST #E91E63
+    rectangle "**Step 3: 图像流后处理 — 门控 + FFN + 残差流**\n\n**Flux 1:** //transformer.py:367-378//\n**── 第一次残差: Attention ──**\nattn_output = **gate_msa.unsqueeze(1)** × attn_output\n  // gate: [B,dim]→[B,**1**,dim] × attn: [B,4096,dim]\nhidden_states = hidden_states **+** attn_output\n\n**── FFN (FeedForward) ──**\nnorm_img = LayerNorm(hidden_states)\nnorm_img = norm_img × (1 + **scale_mlp**) + **shift_mlp**\nff_output = **FeedForward**(norm_img):\n  Linear(3072 → **12288**) + GELU + Linear(**12288** → 3072)\n\n**── 第二次残差: FFN ──**\nff_output = **gate_mlp.unsqueeze(1)** × ff_output\nhidden_states = hidden_states **+** ff_output\n\n**Flux 2:** //flux2/transformer.py:597-604//\n**同样的结构, 但两处不同:**\n  1. gate已是[B,**1**,dim], **无需unsqueeze**\n     attn_output = **gate_msa** × attn_output  // 直接乘\n  2. FFN用 **Flux2FeedForward** (SwiGLU):\n     Linear(6144→**36864**) → SwiGLU → Linear(**18432**→6144)\n     SwiGLU内部: SiLU(x1) ⊙ x2 (x1,x2各18432维)" as DOUBLE_IMG_POST #E91E63
 
 note right of DOUBLE_IMG_POST
   **残差流: 贯穿57层的主线**
@@ -215,11 +258,29 @@ note right of DOUBLE_IMG_POST
   升到12288: 给GELU足够的空间变换
   降回3072: 和残差流对齐
 
-  **Flux 2 FFN 差异:**
+  **Flux 2 FFN 差异 (Flux2FeedForward + Flux2SwiGLU):**
+  //flux2/transformer.py:123-162//
   mlp_ratio=**3.0** (不是4.0)
-  6144 → **18432** → 6144
-  + 用 **SwiGLU** (不是GELU)
-  SwiGLU = SiLU门控, 效果更好
+  **Flux2FeedForward:**
+    Linear(6144 → **18432×2=36864**)  // 升维×2 因为SwiGLU要split
+    → **Flux2SwiGLU:**
+        x1, x2 = x.chunk(2)  // 36864 → 两个18432
+        output = **SiLU(x1) × x2**  // 门控乘法 → 18432
+    → Linear(**18432** → 6144)  // 降回原维
+
+  **SwiGLU 的门控机制:**
+  不同于GELU的 x×Φ(x) (自门控)
+  SwiGLU 用**两路独立的线性投影**:
+    x1 = W1·x  (门控路径, 过SiLU)
+    x2 = W2·x  (值路径, 不过激活)
+    output = SiLU(x1) ⊙ x2
+  → x1决定"开关强度", x2携带"信息内容"
+  → 比GELU多一倍FFN输入参数, 但效果更好
+
+  **⚠️ 注意: 这里的SiLU门控和temb门控是两回事!**
+  temb gate: 控制**整层输出**的残差贡献强度
+  SwiGLU SiLU: 控制**FFN内部**的信息流通路径
+  两者独立工作, 在不同层级调控信息流
 end note
 
     rectangle "**Step 4: 文本流后处理 (对称结构)**\n//transformer.py:381-388//\n\ncontext_attn = **c_gate_msa** × context_attn_output\nencoder_hidden_states += context_attn  // 残差\n\nnorm_txt = norm2_context(encoder_hidden_states)\nnorm_txt = norm_txt × (1+c_scale) + c_shift\ncontext_ff = ff_context(norm_txt)\nencoder_hidden_states += **c_gate_mlp** × context_ff\n\n**文本表示被图像信息更新了!**\n这是和 SDXL Cross-Attention 的本质区别" as DOUBLE_TXT_POST #C62828
@@ -231,26 +292,59 @@ note left of DOUBLE_NORM
   **架构迭代: 调制方式的权衡**
 
   **Flux 1 的选择: 每层独立调制**
-    AdaLayerNormZero 内置 temb→参数 的投影
-    19个double block = 19组独立的调制权重
+    每个 AdaLayerNormZero 内置:
+      self.silu = nn.SiLU()
+      self.linear = nn.Linear(dim, **6**×dim)
+    19个double block × 2流 = **38个独立Linear**
+    + 38个single block 各有 Linear(dim, **3**×dim)
+    **调制参数总量:**
+      Double: 38 × (3072 × 6×3072) ≈ **2.16B 参数**
+      Single: 38 × (3072 × 3×3072) ≈ **1.08B 参数**
     **优点:** 每层可以学到不同的调制策略
-      浅层: temb影响大(决定全局结构)
-      深层: temb影响小(专注细节)
-    **代价:** 参数量更大
+      浅层gate≈0: 跳过(高噪声不需要精修)
+      深层gate≈1: 正常贡献(精修细节)
+    **代价:** 参数量庞大
 
   **Flux 2 的选择: 全局共享调制**
-    一个共享的 Flux2Modulation 模块
-    生成所有层的 (shift, scale, gate)
-    **优点:** 参数大幅减少
-      模型更宽(6144)但调制更轻
-    **代价:** 所有层对temb的响应模式相同
-      靠更宽的隐藏层来补偿表达力
+    **只有3个Flux2Modulation实例** (L791-796):
+      double_stream_modulation_img: Linear(6144, 6144×6)
+      double_stream_modulation_txt: Linear(6144, 6144×6)
+      single_stream_modulation:     Linear(6144, 6144×3)
+    **调制参数总量:**
+      3个Linear ≈ **0.68B 参数** (vs Flux1的3.24B)
+    **代价:** 所有层收到**完全相同的gate值**
+      第0层和第7层的gate_msa一模一样!
+      靠更宽的隐藏层(6144)来补偿表达力
 
   **设计哲学的转变:**
   Flux 1: "每层精细控制" → 深度优先
   Flux 2: "统一控制+更宽通道" → 宽度优先
   这反映了 Scaling Law 的工程实践:
   **加宽比加深更容易并行, 训练更稳定**
+
+  ────────────────────────────────
+  **★ "AdaLayerNormZero" 名字的来源与初始化真相**
+
+  "Zero" 来自 DiT 论文 (Peebles & Xie, 2022)
+  原始设计意图: **初始化时** Linear 权重全部置零
+  → 初始 gate = 0 → 每个block启动时是恒等函数
+  → 训练开始时, 整个Transformer = 直通管道
+  → 模型从"什么都不做"渐进地学会每层的职责
+
+  **源码实证: 不同模型的初始化差异**
+  ✅ HunYuanVideo: nn.init.**zeros_**(self.linear.weight)
+  ✅ HiDream:      nn.init.**zeros_**(self.adaLN_modulation[1].weight)
+  ❌ **Flux 2 的 Flux2Modulation: 没有零初始化!**
+     用的是 PyTorch 默认的 Kaiming Uniform
+  → "Zero"是设计哲学的名字, **不是所有实现都遵守**
+  ────────────────────────────────
+
+  **★ 对 LoRA 训练的影响:**
+  Flux 1: 每层的gate独立 → LoRA可以
+    针对不同层学到不同的调制偏移
+  Flux 2: 所有层gate相同 → LoRA对调制的
+    影响是"一刀切"的, 但block内部的
+    attention/FFN权重仍然是每层独立的
 end note
 
 note right of DOUBLE_ATTN
@@ -303,24 +397,64 @@ note right of DOUBLE_ATTN
   txt_out = **to_add_out**(txt_out)  // 文本用 add_out
 
   return img_out, txt_out
+end note
 
-  ----
-  **Flux 2 的实现差异:**
-  //flux2/transformer.py:165-239//
+note left of DOUBLE_ATTN
+  **Flux 2 Joint Attention 的7处关键差异 ★**
+  //flux2/transformer.py:165-239, 242-314//
 
-  **类名:** Flux2AttnProcessor (非 FluxAttnProcessor2_0)
-  **QK Norm:** 独立的 norm_q/norm_k 模块
-    (Flux 1 用 attn 内置的 rms_norm)
-  **Attention后端:** dispatch_attention_fn()
-    可切换 SDPA / FlashAttention / 其他后端
-    (Flux 1 硬编码 F.scaled_dot_product_attention)
-  **RoPE维度:**
-    Flux 1: axes_dims = (16, 56, 56) → 3维
-    Flux 2: axes_dims = (32, 32, 32, 32) → 4维
-    Flux 2 更均匀的维度分配
+  **差异①: QK Norm — 条件执行 vs 无条件执行**
+  Flux 1: **if** attn.norm_q **is not None**: norm_q(query)
+    (norm可能不存在, 需要守卫判断)
+  Flux 2: attn.norm_q(query) **直接调用, 无if**
+    (构造函数**总是**创建norm_q/norm_k)
 
-  **核心流程完全一致:**
-  拼接QKV → RoPE → SDPA → 拆分 → 各自投影
+  **差异②: QK Norm 的定义与可学习性**
+  Flux 1: qk_norm="rms_norm" 传入 diffusers Attention
+    norm 在 Attention **内部**创建
+  Flux 2: **自己定义**独立的 RMSNorm:
+    norm_q = torch.nn.**RMSNorm**(dim_head,
+      **elementwise_affine=True**)
+    **有可学习的缩放参数 γ!**
+    图像流/文本流各有独立的 norm 参数
+
+  **差异③: 张量布局完全不同 ★★ 最关键!**
+  Flux 1: query.view(B,-1,h,d).**transpose**(1,2)
+    → [B, **heads**, seq, dim]  // heads在前
+  Flux 2: query.**unflatten**(-1, (h,-1))
+    → [B, **seq**, heads, dim]  // seq在前!
+  **不做transpose!** 后续RoPE、Attention、
+  输出reshape全部适配不同布局
+  seq维度在前 → 利于FlashAttention分块
+
+  **差异④: RoPE 应用方式**
+  Flux 1: **_apply_rotary_emb_anyshape**(q, rope)
+    SimpleTuner自定义, 支持批量化RoPE
+  Flux 2: **apply_rotary_emb**(q, rope, **sequence_dim=1**)
+    diffusers标准函数 + 显式序列维度
+
+  **差异⑤: Attention 后端**
+  Flux 1: 硬编码 F.**scaled_dot_product_attention**()
+  Flux 2: **dispatch_attention_fn**(Q, K, V,
+    backend=self._attention_backend)
+    运行时切换 SDPA / FlashAttn / 其他
+
+  **差异⑥: 输出拆分**
+  Flux 1: 切片 hidden_states[:, :txt_len]
+  Flux 2: .**split_with_sizes**([txt_len, img_len])
+
+  **差异⑦: 输出投影顺序**
+  Flux 1: **先img** to_out → **后txt** to_add_out
+  Flux 2: **先txt** to_add_out → **后img** to_out
+  顺序反了! 数值不影响(独立投影)
+
+  **额外: QKV 融合投影 (Flux 2 独有)**
+  Q,K,V = attn.**to_qkv**(x).chunk(3)
+  一次Linear出QKV, 比3次Linear更高效
+
+  **总结: 宏观流程一致, 微观实现全不同**
+  张量布局、Norm定义、RoPE函数、后端调度
+  **Flux 2 方向: 更显式、更灵活、更GPU友好**
 end note
 
 note left of DOUBLE_TXT_POST
@@ -377,11 +511,11 @@ package "**第二阶段: Single Stream Blocks × 38**\n//transformer.py:857-977/
 
     rectangle "**统一序列输入**\n\nhidden_states: [B, **4608**, 3072]\n前512个token = 文本\n后4096个token = 图像\n\n**但Block不知道也不关心这个区分**\n统一处理所有 token" as SINGLE_INPUT #C8E6C9
 
-    rectangle "**Step 1: AdaLayerNormSingle**\n//transformer.py:257//\n\nnorm_states, gate = norm(hidden_states, emb=temb)\n\n**只有1个norm, 不分图像/文本**\n**只有1个gate, 不分图像/文本**\n比 Double Stream 简洁得多" as SINGLE_NORM #A5D6A7
+    rectangle "**Step 1: 条件调制 ★ Single Stream 门控详解**\n\n**Flux 1:** //transformer.py:257//\n  **AdaLayerNormZeroSingle** — 每个block**内部自带**投影\n  //diffusers/models/normalization.py//\n    emb = **Linear**(dim→**3**×dim)( **SiLU**(temb) )\n    shift_msa, scale_msa, **gate_msa** = emb.chunk(**3**, dim=1)\n    x = LayerNorm(x) × (1+scale_msa) + shift_msa\n    return x, gate_msa   // gate: [B, dim]\n  **只有1个gate** (因为Attn+MLP并行后合并投影)\n  gate用法: gate.unsqueeze(1) × proj_out(cat(attn,mlp))\n  **38个block各有独立的 Linear(3072→9216) 权重**\n\n**Flux 2:** //flux2/transformer.py:505-517//\n  **共享 single_stream_modulation** (mod_param_sets=1)\n    (shift, scale, **gate**) = single_stream_modulation(temb)[0]\n    x = (1+scale) × LayerNorm(x) + shift\n  gate用法: hidden_states + **gate** × attn_output\n  **48个single block收到完全相同的gate值!**\n  gate: [B, 1, dim], 无需unsqueeze\n\n**★ 关键差异: gate的作用位置不同!**\n  Flux 1: gate × proj_out(**cat(attn, mlp)**) → 门控整个输出\n  Flux 2: gate × attn_output → 门控的是**已经融合了MLP的**输出\n  (因为Flux2的ParallelSelfAttention内部已融合attn+mlp)" as SINGLE_NORM #A5D6A7
 
     rectangle "**Step 2: 并行 Attention + MLP ★ Flux1 vs Flux2 差异**\n\n**Flux 1:** //transformer.py:258-272//\n  MLP 分支: mlp_out = GELU(proj_mlp(norm))\n  Attn 分支: attn_out = attn(norm, encoder=**None**)\n  output = **cat([attn_out, mlp_out]**, dim=-1)\n  → proj_out 压缩回工作维度\n  **MLP和Attention在外部并行, 结果拼接**\n\n**Flux 2:** //flux2/transformer.py:476-486//\n  Flux2**ParallelSelf**Attention 内部:\n  QKV投影和MLP投影**融合在同一个线性层**!\n  一次矩阵乘法同时出 Q,K,V + MLP_hidden\n  **并行不是在外部cat, 而是在投影层就融合了**\n  → 更少的内存访问, 更高的GPU利用率\n\n两者都是 encoder_hidden_states=None\n→ 纯 Self-Attention, 4608/1536 tokens互看" as SINGLE_ATTN #81C784
 
-    rectangle "**Step 3: 投影 + Gate + 残差**\n//transformer.py:273-275//\n\nhidden_states = gate × proj_out(output)\nhidden_states = residual + hidden_states\n\nproj_out: [3072+12288] → [3072]\n**把拼接的 Attn+MLP 压缩回工作维度**\n\ngate 控制这一层的贡献强度\n残差连接保底" as SINGLE_POST #66BB6A
+    rectangle "**Step 3: 投影 + Gate + 残差 ★ Flux1 vs Flux2 差异**\n\n**Flux 1:** //transformer.py:273-275//\n  output = cat([attn_out, mlp_out], dim=2)\n  gate = gate_msa.**unsqueeze(1)**  // [B,dim]→[B,1,dim]\n  hidden_states = **gate** × proj_out(output)\n  hidden_states = **residual + hidden_states**\n  proj_out: [3072+12288=**15360**] → [3072]\n  **gate门控的是 Attn+MLP 合并投影后的整个输出**\n\n**Flux 2:** //flux2/transformer.py:517//\n  attn_output = ParallelSelfAttn(norm_x)  // 内部已融合attn+mlp\n  hidden_states = hidden_states + **mod_gate** × attn_output\n  **gate门控的是已融合attn+mlp的输出**\n  mod_gate: [B,1,dim], 直接乘, 无需unsqueeze\n\n**公式对比:**\n  Flux 1: x = x + gate × W_out(concat(Attn(x̂), MLP(x̂)))\n  Flux 2: x = x + gate × ParallelAttnMLP(x̂)" as SINGLE_POST #66BB6A
 }
 
 note right of SINGLE_ATTN
@@ -502,6 +636,12 @@ note bottom of EXTRACT
   | Single Block类 | FluxSingleTransformerBlock | **Flux2SingleTransformerBlock** |
   | Attention类 | FluxAttnProcessor2_0 | **Flux2AttnProcessor** |
   | 调制方式 | AdaLayerNormZero (每层独立) | **共享Modulation** (全层相同) |
+  | **门控函数** | **SiLU→Linear→chunk (每层独立权重)** | **SiLU→Linear→chunk (全局共享权重)** |
+  | **门控实例数** | **Double: 38个 + Single: 38个 = 76个** | **Double: 2个 + Single: 1个 = 仅3个** |
+  | **gate值范围** | **(-∞,+∞) 无界, 训练趋向[0,~2]** | **(-∞,+∞) 无界, 同左** |
+  | **gate形状** | **[B, dim], 需.unsqueeze(1)** | **[B, 1, dim], 内部已unsqueeze** |
+  | **跨层gate差异** | **每层不同 (独立Linear权重)** | **所有层相同 (共享Linear权重)** |
+  | FFN激活 | GELU(approximate="tanh") | **SwiGLU = SiLU(x1)×x2** |
   | QK Norm | rms_norm (attn内置) | **独立norm模块** |
   | Attention后端 | 硬编码 SDPA | **dispatch_attention_fn** (可切换) |
   | Single MLP融合 | 外部cat拼接 | **投影层内部融合** |
@@ -514,6 +654,14 @@ note bottom of EXTRACT
   **核心思想完全一致, 但工程实现全部重写**
   Flux 2 的每一处改动都指向同一个方向:
   **更宽的通道 + 更高效的计算 + 更少的冗余参数**
+
+  **★ 门控函数总结 (两版本共同):**
+  gate = chunk( **Linear**( **SiLU**(temb) ) )
+  本质: temb先过SiLU非线性激活, 再线性投影, 最后切片取gate
+  **SiLU不是gate的激活函数, 而是temb的预处理!**
+  gate本身没有额外激活, 是原始的线性输出
+  这意味着gate可以是负数(反转信号)或大于1(放大信号)
+  但实际训练中, 模型学到的gate值大多在 [0, ~2] 范围内
 
   **LoRA 插入点 (两者相同):**
   Double Stream: to_q/k/v (图像) + add_q/k/v_proj (文本) + to_out + to_add_out
