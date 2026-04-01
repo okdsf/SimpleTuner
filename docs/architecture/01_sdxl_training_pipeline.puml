@@ -116,7 +116,7 @@ package "**阶段D: 时间步 + 加噪 (BIG GUY: common.py 5293行)**" as PKG_TI
 
     rectangle "**D3: 生成时间步 (SDXL分支)**\n//common.py:4375-4388//\n\n**关键分叉: SDXL走else分支**\nSDXL.PREDICTION_TYPE = EPSILON (非flow matching)\n\n  ┌ weights = generate_timestep_weights()\n  │   //custom_schedule.py:61//\n  │   按bias策略加权:\n  │   earlier/later/range/none\n  │\n  └ timesteps = segmented_timestep_selection()\n      //custom_schedule.py:18//\n      把[0,999]切成bsz段\n      每段按权重抽1个\n      → 保证batch内时间步分散" as D3_TIMESTEP #FF9800
 
-    rectangle "**D4: 加噪**\n//common.py:4389-4393//\n\nnoisy_latents = scheduler.add_noise(\n    latents, noise, timesteps\n)\n\n**DDPM加噪公式:**\nx_t = sqrt(a_bar_t) * x_0 + sqrt(1-a_bar_t) * e\n\n其中:\n  x_0 = 干净latent\n  e   = 高斯噪声\n  a_bar_t = 累积alpha (由timestep决定)\n  t越大 → 噪声越多 → x_t越接近纯噪声" as D4_ADD_NOISE #F57C00
+    rectangle "**D4: 加噪**\n//common.py:4389-4393//\n\nnoisy_latents = scheduler.add_noise(\n    latents, noise, timesteps\n)\n\n**DDPM加噪公式:**\n<latex>x_t = \sqrt{\bar{\alpha}_t}\, x_0 + \sqrt{1 - \bar{\alpha}_t}\, \epsilon</latex>\n\n其中:\n  <latex>x_0</latex> = 干净latent\n  <latex>\epsilon</latex> = 高斯噪声\n  <latex>\bar{\alpha}_t</latex> = 累积alpha (由timestep决定)\n  t越大 → 噪声越多 → <latex>x_t</latex>越接近纯噪声" as D4_ADD_NOISE #F57C00
 }
 
 note left of D3_TIMESTEP
@@ -125,12 +125,12 @@ note left of D3_TIMESTEP
 
   **if FLOW_MATCHING:** (Flux/SD3)
     sigmas = sample_flow_sigmas()
-    x_t = (1-s)*x_0 + s*noise
+    <latex>x_t = (1-\sigma)\, x_0 + \sigma\, \epsilon</latex>
     线性插值, 更简洁
 
   **else:** (SDXL/SD1.x)
     timesteps = segmented_selection()
-    x_t = sqrt(a)*x_0 + sqrt(1-a)*noise
+    <latex>x_t = \sqrt{\bar{\alpha}_t}\, x_0 + \sqrt{1-\bar{\alpha}_t}\, \epsilon</latex>
     DDPM经典公式
 
   **这个if/else是框架最重要的分叉点**

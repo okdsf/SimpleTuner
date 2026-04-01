@@ -227,11 +227,11 @@ note right of CONV_OUT
   ----
   **SiLU / Swish (为什么不用 ReLU?):**
 
-  ReLU(x) = max(0, x)
+  <latex>\mathrm{ReLU}(x) = \max(0,\;x)</latex>
     x<0 时输出恒为0, 梯度=0
     → 神经元"死掉", 永远无法恢复
 
-  SiLU(x) = x × sigmoid(x)
+  <latex>\mathrm{SiLU}(x) = x \cdot \sigma(x) = \frac{x}{1 + e^{-x}}</latex>
     x<0 时输出是**微小负值**, 梯度不为0
     → 处处平滑可导, 训练更稳定
     → 不会有死神经元问题
@@ -254,7 +254,7 @@ package "**Cross-Attention 核心计算**\n//attention_processor.py:3261-3288//\
 
     rectangle "**多头切分**\n//L3274-3277//\n\nQ: [B, HW, dim] → [B, **heads**, HW, head_dim]\nK: [B, 77, dim] → [B, **heads**, 77, head_dim]\nV: [B, 77, dim] → [B, **heads**, 77, head_dim]\n\nSDXL: heads=10, head_dim=64\n**每个头独立关注不同的语义子空间**" as ATTN_MULTIHEAD #FFF59D
 
-    rectangle "**Scaled Dot-Product Attention**\n//L3286-3288//\n\nhidden = F.scaled_dot_product_attention(\n    Q, K, V\n)\n\n**展开: softmax(Q × K^T / √d) × V**\n\nQ×K^T: 图像每个位置 vs 文本每个token\n  → attention_map [B, heads, HW, 77]\n  → 每个像素对每个token的关注权重\n\nsoftmax: 归一化成概率分布\n\n× V: 按权重加权文本信息\n  → 注入到图像特征中" as ATTN_SDPA #FFEE58
+    rectangle "**Scaled Dot-Product Attention**\n//L3286-3288//\n\nhidden = F.scaled_dot_product_attention(\n    Q, K, V\n)\n\n**展开:** <latex>\mathrm{softmax}\!\left(\frac{QK^\top}{\sqrt{d}}\right) V</latex>\n\nQ×K^T: 图像每个位置 vs 文本每个token\n  → attention_map [B, heads, HW, 77]\n  → 每个像素对每个token的关注权重\n\nsoftmax: 归一化成概率分布\n\n× V: 按权重加权文本信息\n  → 注入到图像特征中" as ATTN_SDPA #FFEE58
 
     rectangle "**输出投影**\n//L3294-3296//\n\nhidden = to_out[0](hidden)  // 线性投影\nhidden = to_out[1](hidden)  // Dropout\n\n**LoRA 插入的 4 个位置:**\n  to_q, to_k, to_v, to_out.0\n\n改变 to_q/to_k = 改变\"谁关注谁\"\n改变 to_v/to_out = 改变\"注入什么信息\"\n\n**几MB的LoRA就能改变整个风格**\n因为它控制了信息流动的全部路径" as ATTN_OUT #FDD835
 }

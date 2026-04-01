@@ -75,7 +75,7 @@ note right of PACK_FLUX1
 
   Flux 2 序列短 4 倍
   → Self-Attention 计算量减少 **16 倍**
-  (attention是O(n²))
+  (attention是<latex>\mathcal{O}(n^2)</latex>)
   → 这是 Flux 2 效率提升的关键来源
 end note
 
@@ -174,9 +174,9 @@ package "**阶段C: 时间步 + 加噪 (Flow Matching)**\n//common.py// — Flux
 
     rectangle "**采样噪声**\n//common.py:4339//\n\nnoise = torch.randn_like(latents)\n+ offset_noise (可选)\n\nFlux 1/2 噪声采样逻辑相同" as NOISE #FFE0B2
 
-    rectangle "**时间步采样: sample_flow_sigmas()**\n//common.py:3574//\n\n采样 sigma ∈ [0, 1]\n  σ=0: 纯干净图\n  σ=1: 纯噪声\n\n+ **Dynamic Shifting:**\n  mu = calculate_shift(seq_len)\n  sigma分布随图片大小动态调整\n\n  Flux 1: seq_len=4096 → shift较大\n  Flux 2: seq_len=1024 → shift较小\n  (不同 base/max_shift 参数)" as SIGMA #FFCC80
+    rectangle "**时间步采样: sample_flow_sigmas()**\n//common.py:3574//\n\n采样 <latex>\sigma \in [0,\, 1]</latex>\n  <latex>\sigma=0</latex>: 纯干净图\n  <latex>\sigma=1</latex>: 纯噪声\n\n+ **Dynamic Shifting:**\n  mu = calculate_shift(seq_len)\n  sigma分布随图片大小动态调整\n\n  Flux 1: seq_len=4096 → shift较大\n  Flux 2: seq_len=1024 → shift较小\n  (不同 base/max_shift 参数)" as SIGMA #FFCC80
 
-    rectangle "**加噪: Flow Matching 线性插值**\n\n**x_t = (1 - σ) × x_0 + σ × noise**\n\n线性插值, 数学简洁:\n  σ=0: x_t = x_0 (纯干净)\n  σ=0.5: x_t = 各半\n  σ=1: x_t = noise (纯噪声)\n\n预测目标: **v = noise - latent**\n\"从干净到噪声的方向向量\"\n\nFlux 1/2 共享此逻辑" as ADD_NOISE #FFB74D
+    rectangle "**加噪: Flow Matching 线性插值**\n\n<latex>x_t = (1 - \sigma)\, x_0 + \sigma\, \epsilon</latex>\n\n线性插值, 数学简洁:\n  <latex>\sigma=0: x_t = x_0</latex> (纯干净)\n  <latex>\sigma=0.5:</latex> 各半\n  <latex>\sigma=1: x_t = \epsilon</latex> (纯噪声)\n\n预测目标: <latex>v = \epsilon - x_0</latex>\n\"从干净到噪声的方向向量\"\n\nFlux 1/2 共享此逻辑" as ADD_NOISE #FFB74D
 }
 
 note right of SIGMA
@@ -210,7 +210,7 @@ note left of ADD_NOISE
   **Flow Matching 预测目标:**
   //common.py:3513-3514//
 
-  target = noise - latent
+  <latex>\mathrm{target} = \epsilon - x_0</latex>
   "从干净到噪声的**方向向量**"
 
   **直觉:**
@@ -276,7 +276,7 @@ note right of FLUX1_TRANSFORMER
   Q = [Q_img; Q_txt]
   K = [K_img; K_txt]
   V = [V_img; V_txt]
-  → softmax(Q×K^T/√d) × V
+  → <latex>\mathrm{softmax}\!\left(\frac{QK^\top}{\sqrt{d}}\right) V</latex>
 
   图像token可以看文本token
   文本token也可以看图像token
@@ -294,8 +294,8 @@ note right of FLUX2_TRANSFORMER
   Flux 1: 4096 img + 512 txt = **4608**
   Flux 2: 1024 img + 512 txt = **1536**
 
-  Attention 是 O(n²):
-  4608² / 1536² = **9× 计算量差距**
+  Attention 是 <latex>\mathcal{O}(n^2)</latex>:
+  <latex>4608^2 / 1536^2 = 9\times</latex> 计算量差距
 
   **Flux 2 用更宽的隐藏层:**
   inner_dim: 3072 → **6144** (2×)

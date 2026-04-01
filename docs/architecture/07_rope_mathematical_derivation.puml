@@ -1,0 +1,241 @@
+@startuml RoPE_Mathematical_Derivation
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontName "Microsoft YaHei"
+skinparam defaultFontSize 11
+skinparam ArrowThickness 2
+skinparam RoundCorner 8
+skinparam PackageBorderThickness 2
+skinparam NoteBackgroundColor #FFFFDD
+skinparam NoteBorderColor #999999
+
+title **RoPE 旋转位置编码 — 完整数学推导**\n从1D文本到4D多模态, 代码验证+公式推导\n核心思想: 通过复平面旋转, 使注意力分数天然编码相对位置
+
+' ============================================================
+' 基础: 旋转矩阵定义
+' ============================================================
+package "**基础: 旋转矩阵 R 的定义**" as PKG_BASE #E8EAF6 {
+
+    rectangle "**旋转频率基底**\n\n<latex>\theta_i = \mathrm{base}^{-2i/d}, \quad i = 0, 1, \ldots, d/2 - 1</latex>\n\n**base 值:**\n  标准LLM / Flux 1: base = 10000\n  Flux 2: base = **2000**\n\n**直觉:**\n  i 小 → <latex>\theta_i</latex> 大 → 旋转快 → **高频** → 区分近距离\n  i 大 → <latex>\theta_i</latex> 小 → 旋转慢 → **低频** → 捕捉远距离" as THETA_DEF #C5CAE9
+
+    rectangle "**块对角旋转矩阵**\n\n给定位置 m, 构造 d×d 旋转矩阵:\n\n<latex>R_{\Theta,m}^{d} = \begin{pmatrix} \cos(m\theta_0) & -\sin(m\theta_0) & & \\ \sin(m\theta_0) & \cos(m\theta_0) & & \\ & & \ddots & \\ & & \cos(m\theta_{d/2-1}) & -\sin(m\theta_{d/2-1}) \\ & & \sin(m\theta_{d/2-1}) & \cos(m\theta_{d/2-1}) \end{pmatrix}</latex>\n\n每对相邻维度 <latex>(q_{2i}, q_{2i+1})</latex> 被视为复平面上的一个点\n乘以旋转矩阵 = 在复平面上旋转 <latex>m \cdot \theta_i</latex> 角度" as ROT_MATRIX #9FA8DA
+
+    rectangle "**等价的高效实现 (代码实际用的)**\n//diffusers/models/embeddings.py:1208//\n\n不用矩阵乘法, 用逐元素运算:\n\n<latex>q'_{2i} = q_{2i} \cos(m\theta_i) - q_{2i+1} \sin(m\theta_i)</latex>\n<latex>q'_{2i+1} = q_{2i} \sin(m\theta_i) + q_{2i+1} \cos(m\theta_i)</latex>\n\n向量化形式:\n<latex>q' = q \odot \cos(m\Theta) + \mathrm{rotate\_half}(q) \odot \sin(m\Theta)</latex>\n\nrotate_half: 将 <latex>[q_0, q_1, q_2, q_3, \ldots]</latex>\n变成 <latex>[-q_1, q_0, -q_3, q_2, \ldots]</latex>" as ROT_IMPL #7986CB
+}
+
+note right of ROT_MATRIX
+  **正交性质 (推导的数学基础):**
+
+  <latex>(R_{\Theta,m}^{d})^T = R_{\Theta,-m}^{d}</latex>
+
+  即: 旋转矩阵的转置 = 反向旋转
+  这是 RoPE 能编码**相对距离**的关键
+
+  **证明:**
+  <latex>\cos(-m\theta) = \cos(m\theta)</latex>
+  <latex>\sin(-m\theta) = -\sin(m\theta)</latex>
+  代入旋转矩阵即得转置 = 逆旋转
+end note
+
+' ============================================================
+' 1D RoPE: 文本序列
+' ============================================================
+package "**1D RoPE: 文本序列的单维旋转**" as PKG_1D #E8F5E9 {
+
+    rectangle "**应用旋转**\n\n位置 m 的 Query: <latex>q'_m = R_{\Theta,m}^{d}\; q_m</latex>\n位置 n 的 Key:   <latex>k'_n = R_{\Theta,n}^{d}\; k_n</latex>" as ROPE_1D_APPLY #C8E6C9
+
+    rectangle "**核心推导: 内积只含相对距离**\n\n<latex>\langle q'_m,\; k'_n \rangle = (R_{\Theta,m}^{d}\; q_m)^T\; (R_{\Theta,n}^{d}\; k_n)</latex>\n\n<latex>= q_m^T\; (R_{\Theta,m}^{d})^T\; R_{\Theta,n}^{d}\; k_n</latex>\n\n利用正交性 <latex>(R_m)^T = R_{-m}</latex>:\n\n<latex>= q_m^T\; R_{\Theta,-m}^{d}\; R_{\Theta,n}^{d}\; k_n</latex>\n\n旋转矩阵乘法 = 角度相加:\n\n<latex>= q_m^T\; R_{\Theta,\;n-m}^{d}\; k_n</latex>\n\n**结论:** 注意力分数只依赖 <latex>n - m</latex> (相对距离)\n绝对位置 m, n 被消去了!" as ROPE_1D_PROOF #A5D6A7
+}
+
+note right of ROPE_1D_PROOF
+  **这为什么重要?**
+
+  **绝对位置编码** (SDXL Sinusoidal):
+  <latex>\mathrm{Attn}(m, n) = f(m, n)</latex>
+  训练只见过 <latex>m, n \in [0, 1024]</latex>
+  推理 <latex>m = 2048</latex> → 没见过 → **崩溃**
+
+  **RoPE 相对位置编码:**
+  <latex>\mathrm{Attn}(m, n) = g(n - m)</latex>
+  只要 <latex>|n - m|</latex> 在训练范围内就有效
+  推理分辨率增大 → 相对距离仍有意义
+  → **天然支持可变分辨率**
+
+  这就是 Flux 能灵活切换分辨率的数学基础
+end note
+
+' ============================================================
+' 2D RoPE: Flux 1 图像
+' ============================================================
+package "**2D RoPE: Flux 1 图像空间坐标**\nhead_dim=128, axes_dim=(16, 56, 56), theta=10000" as PKG_2D #FFF3E0 {
+
+    rectangle "**维度切分**\n\n128维 head_dim 切成三段子空间:\n<latex>q = [q^{(0)},\; q^{(y)},\; q^{(x)}]</latex>\n\n<latex>q^{(0)} \in \mathbb{R}^{16}</latex>  — 预留维度\n<latex>q^{(y)} \in \mathbb{R}^{56}</latex> — Y轴编码\n<latex>q^{(x)} \in \mathbb{R}^{56}</latex> — X轴编码" as ROPE_2D_SPLIT #FFE0B2
+
+    rectangle "**各轴独立旋转**\n\n预留维度 (pos=0, 恒等变换):\n<latex>q'^{(0)} = R_{\Theta,0}^{16}\; q^{(0)} = I \cdot q^{(0)} = q^{(0)}</latex>\n(<latex>\cos(0)=1,\; \sin(0)=0</latex> → 旋转矩阵=单位阵)\n\nY轴 (带入 y 坐标):\n<latex>q'^{(y)} = R_{\Theta,y}^{56}\; q^{(y)}</latex>\n\nX轴 (带入 x 坐标):\n<latex>q'^{(x)} = R_{\Theta,x}^{56}\; q^{(x)}</latex>" as ROPE_2D_ROTATE #FFCC80
+
+    rectangle "**2D 内积分解**\n\n<latex>\langle q'_{(y_1,x_1)},\; k'_{(y_2,x_2)} \rangle</latex>\n\n<latex>= \langle q^{(0)},\; k^{(0)} \rangle</latex>\n<latex>+ q^{(y)T}\; R_{\Theta,\;\Delta y}^{56}\; k^{(y)}</latex>\n<latex>+ q^{(x)T}\; R_{\Theta,\;\Delta x}^{56}\; k^{(x)}</latex>\n\n其中 <latex>\Delta y = y_2 - y_1</latex>,  <latex>\Delta x = x_2 - x_1</latex>\n\n**注意力分数自动分解为三项:**\n常数项 + Y方向相对距离 + X方向相对距离\n→ 模型天然感知二维空间的相对位置" as ROPE_2D_INNER #FFB74D
+}
+
+note right of ROPE_2D_SPLIT
+  **为什么预留16维?**
+
+  Flux 1 的设计: (16, 56, 56)
+  第一维恒为0, 不参与位置编码
+  → 这16维成为**位置无关**的自由维度
+  → 可以编码非空间的语义信息
+
+  Flux 2 把预留维度重新利用:
+  (32, 32, 32, 32) → 第一维变成T维
+  用于区分多张参考图的身份
+end note
+
+' ============================================================
+' 3D RoPE: 视频模型
+' ============================================================
+package "**3D RoPE: 视频模型的时空坐标**\n如 HunyuanVideo, axes_dim=(16, 56, 56)" as PKG_3D #FCE4EC {
+
+    rectangle "**时空三轴旋转**\n\n视频token坐标: <latex>(t, y, x)</latex> — 帧号, 高度, 宽度\n\n<latex>q = [q^{(t)},\; q^{(y)},\; q^{(x)}]</latex>\n\n<latex>q'^{(t)} = R_{\Theta,t}^{16}\; q^{(t)}</latex>  — 时间轴: 占前16维\n<latex>q'^{(y)} = R_{\Theta,y}^{56}\; q^{(y)}</latex> — 空间Y: 中间56维\n<latex>q'^{(x)} = R_{\Theta,x}^{56}\; q^{(x)}</latex> — 空间X: 最后56维" as ROPE_3D_ROTATE #F8BBD0
+
+    rectangle "**3D 内积分解**\n\n<latex>\langle q'_{(t_1,y_1,x_1)},\; k'_{(t_2,y_2,x_2)} \rangle</latex>\n\n<latex>= q^{(t)T}\; R_{\Theta,\;\Delta t}^{16}\; k^{(t)}</latex>\n<latex>+ q^{(y)T}\; R_{\Theta,\;\Delta y}^{56}\; k^{(y)}</latex>\n<latex>+ q^{(x)T}\; R_{\Theta,\;\Delta x}^{56}\; k^{(x)}</latex>\n\n<latex>\Delta t = t_2 - t_1</latex>: 帧间时间距离\n<latex>\Delta y = y_2 - y_1</latex>: 垂直空间距离\n<latex>\Delta x = x_2 - x_1</latex>: 水平空间距离\n\n→ 时空注意力天然感知\"多远的帧 + 多远的位置\"" as ROPE_3D_INNER #EC407A
+}
+
+' ============================================================
+' 4D RoPE: Flux 2 多模态
+' ============================================================
+package "**4D RoPE: Flux 2 的终极多模态架构 ★**\nhead_dim=128, axes_dim=(32, 32, 32, 32), theta=2000" as PKG_4D #F3E5F5 {
+
+    rectangle "**等分四轴**\n\n128维 head_dim 等分为四段:\n<latex>q = [q^{(T)},\; q^{(H)},\; q^{(W)},\; q^{(L)}]</latex>\n\n<latex>q^{(T)} \in \mathbb{R}^{32}</latex> — 参考图身份轴\n<latex>q^{(H)} \in \mathbb{R}^{32}</latex> — 空间高度轴\n<latex>q^{(W)} \in \mathbb{R}^{32}</latex> — 空间宽度轴\n<latex>q^{(L)} \in \mathbb{R}^{32}</latex> — 文本序列轴" as ROPE_4D_SPLIT #CE93D8
+
+    rectangle "**四轴独立旋转**\n\n<latex>q'^{(T)} = R_{2000,\;T}^{32}\; q^{(T)}</latex>\n<latex>q'^{(H)} = R_{2000,\;y}^{32}\; q^{(H)}</latex>\n<latex>q'^{(W)} = R_{2000,\;x}^{32}\; q^{(W)}</latex>\n<latex>q'^{(L)} = R_{2000,\;L}^{32}\; q^{(L)}</latex>\n\n**注意 theta=2000, 不是10000**\n→ 频率更高 → 近距离更敏感" as ROPE_4D_ROTATE #B39DDB
+
+    rectangle "**图像token的坐标**\n//flux2/pipeline.py:962-991//\n\n<latex>\mathrm{img\_ids} = (T{=}0,\; H{=}y,\; W{=}x,\; L{=}0)</latex>\n\nT=0: 纯T2I, 不区分身份\nH=y, W=x: 空间位置\nL=0: 图像没有序列顺序" as ROPE_4D_IMG #9C27B0
+
+    rectangle "**文本token的坐标 ★ 重大变化**\n//flux2/pipeline.py:943-959//\n\n<latex>\mathrm{txt\_ids} = (T{=}0,\; H{=}0,\; W{=}0,\; L{=}0,1,2,\ldots,511)</latex>\n\n**Flux 1 文本ids全零 → RoPE不影响文本**\n**Flux 2 在L维有递增序号!**\n→ RoPE 也编码文本token的顺序\n→ Joint Attention 中图文对齐更精确" as ROPE_4D_TXT #7B1FA2
+
+    rectangle "**★ T维: 多参考图身份区分**\n//flux2/pipeline.py:1027//\n//flux2/__init__.py:195-203//\n\n纯T2I: T=0, 不起作用\n\n**多参考图场景** (_prepare_image_ids):\n  第1张参考图: <latex>T = s + s \times 0 = 10</latex>\n  第2张参考图: <latex>T = s + s \times 1 = 20</latex>\n  第3张参考图: <latex>T = s + s \times 2 = 30</latex>\n  (s=scale=10)\n\n同一参考图内: <latex>\Delta T = 0</latex> → T维旋转为恒等\n跨参考图: <latex>\Delta T \neq 0</latex> → T维引入位置偏置\n→ **零额外参数, 靠位置编码区分多图身份**" as ROPE_4D_MULTI #4A148C
+}
+
+note right of ROPE_4D_MULTI
+  **Flux 2 多参考图 vs IP-Adapter:**
+
+  **IP-Adapter (旧方案):**
+  额外训练 image encoder
+  + 额外 cross-attention 注入层
+  = 后装插件, 与主模型训练目标不一致
+  = 单层信息注入, 融合深度有限
+
+  **Flux 2 (新方案):**
+  参考图和生成图走**同一个Transformer**
+  靠T维RoPE坐标区分身份
+  57层 Joint Attention 做完整双向交互
+  **零额外参数, 零额外模块**
+
+  **一个整数 (T坐标) 解决身份区分**
+  剩下的全交给 Attention 自己学
+end note
+
+note left of ROPE_4D_TXT
+  **4D 内积的完整分解:**
+
+  <latex>\langle q'_{(T_1,y_1,x_1,L_1)},\; k'_{(T_2,y_2,x_2,L_2)} \rangle</latex>
+
+  <latex>= q^{(T)T}\; R_{2000,\;\Delta T}^{32}\; k^{(T)}</latex>
+  <latex>+ q^{(H)T}\; R_{2000,\;\Delta y}^{32}\; k^{(H)}</latex>
+  <latex>+ q^{(W)T}\; R_{2000,\;\Delta x}^{32}\; k^{(W)}</latex>
+  <latex>+ q^{(L)T}\; R_{2000,\;\Delta L}^{32}\; k^{(L)}</latex>
+
+  **四个维度独立贡献, 互不干扰**
+
+  **图像-图像交互:**
+  <latex>\Delta T=0,\; \Delta L=0</latex> → 只剩 <latex>\Delta y, \Delta x</latex>
+  = 纯空间相对位置
+
+  **文本-文本交互:**
+  <latex>\Delta T=0,\; \Delta y=0,\; \Delta x=0</latex> → 只剩 <latex>\Delta L</latex>
+  = 纯序列相对位置
+
+  **图像-文本交互:**
+  图像 <latex>L=0</latex>, 文本 <latex>H=0,W=0</latex>
+  → <latex>\Delta L = -L_{\mathrm{txt}}</latex>, <latex>\Delta y = y_{\mathrm{img}}</latex>, <latex>\Delta x = x_{\mathrm{img}}</latex>
+  = RoPE 同时编码了空间和序列距离
+
+  **跨参考图交互:**
+  <latex>\Delta T \neq 0</latex> → T维引入额外偏置
+  = 位置编码自动区分多图身份
+end note
+
+' ============================================================
+' Flux 1 vs Flux 2 RoPE 差异对比
+' ============================================================
+package "**Flux 1 vs Flux 2: 关键RoPE差异**" as PKG_COMPARE #E0F2F1 {
+
+    rectangle "**5项关键差异**\n\n| 项目 | Flux 1 | Flux 2 |\n|---|---|---|\n| **theta** | 10000 (标准) | **2000** (高频, 近距离敏感) |\n| **维度** | (16,56,56) 3D | **(32,32,32,32) 4D** |\n| **文本ids** | 全零 (RoPE不影响文本) | **L维有序号** |\n| **T维** | 预留, 恒为0 | **多参考图身份** (10,20,30) |\n| **计算流程** | cat(ids)→一起算 | **图文分别算→cat** |" as COMPARE_TABLE #B2DFDB
+}
+
+note right of COMPARE_TABLE
+  **theta=2000 的数学含义:**
+
+  <latex>\theta_i = 2000^{-2i/32}</latex>  vs  <latex>\theta_i = 10000^{-2i/56}</latex>
+
+  base 更小 → <latex>\theta_i</latex> 整体更大
+  → 旋转角 <latex>m \cdot \theta_i</latex> 增长更快
+  → 相邻位置的旋转角差距更大
+  → **近距离位置差异更明显**
+
+  但远距离的旋转角很快溢出 <latex>2\pi</latex> 周期
+  → **远距离区分度降低**
+
+  Flux 2 用更宽的通道 (6144 vs 3072)
+  补偿远距离表达力的损失
+end note
+
+' ============================================================
+' 连接线
+' ============================================================
+THETA_DEF -down-> ROT_MATRIX
+ROT_MATRIX -down-> ROT_IMPL
+
+ROT_IMPL -down-> ROPE_1D_APPLY
+ROPE_1D_APPLY -down-> ROPE_1D_PROOF
+
+ROPE_1D_PROOF -down-> ROPE_2D_SPLIT
+ROPE_2D_SPLIT -down-> ROPE_2D_ROTATE
+ROPE_2D_ROTATE -down-> ROPE_2D_INNER
+
+ROPE_2D_INNER -down-> ROPE_3D_ROTATE
+ROPE_3D_ROTATE -down-> ROPE_3D_INNER
+
+ROPE_3D_INNER -down-> ROPE_4D_SPLIT
+ROPE_4D_SPLIT -down-> ROPE_4D_ROTATE
+ROPE_4D_ROTATE -down-> ROPE_4D_IMG
+ROPE_4D_IMG -right-> ROPE_4D_TXT
+ROPE_4D_TXT -down-> ROPE_4D_MULTI
+
+ROPE_4D_MULTI -down-> COMPARE_TABLE
+
+' ============================================================
+' 底部: 代码验证来源
+' ============================================================
+note bottom of COMPARE_TABLE
+  **代码验证来源 (SimpleTuner 仓库):**
+
+  | 内容 | 文件位置 |
+  |---|---|
+  | Flux 1 axes_dim, theta | flux/transformer.py:441, 465 |
+  | Flux 2 axes_dim, theta | flux2/transformer.py:766-767 |
+  | Flux 1 img_ids 构建 | flux/transformer.py:1010-1024 |
+  | Flux 1 txt_ids 全零 | flux/transformer.py:1026 |
+  | Flux 2 img_ids 构建 | flux2/pipeline.py:962-991 |
+  | Flux 2 txt_ids 构建 | flux2/pipeline.py:943-959 |
+  | Flux 2 多参考图 T 坐标 | flux2/pipeline.py:1027, flux2/__init__.py:195-203 |
+  | Flux 1 RoPE (cat后一起算) | flux/transformer.py:709-711 |
+  | Flux 2 RoPE (分别算再cat) | flux2/transformer.py:992-998 |
+  | apply_rotary_emb 公式 | diffusers/models/embeddings.py:1208 |
+
+  **参考资料:**
+  - RoPE 原论文: RoFormer (Su et al., 2021)
+  - Flux 2 多参考图: 架构层面原生支持, 零额外参数
+  - 大G老师数学推导协助
+end note
+
+@enduml

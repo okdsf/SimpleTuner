@@ -102,11 +102,11 @@ note right of PREPARE
   接近 resolution² (如 1024²≈1M像素)
 
   原图 1920×1080 (16:9):
-  1. 宽高比 = 1920/1080 = 1.778
-  2. 目标面积 = 1024² = 1048576
+  1. 宽高比 <latex>r = 1920/1080 = 1.778</latex>
+  2. 目标面积 <latex>S = 1024^2 = 1048576</latex>
   3. 保持比例:
-     h = sqrt(1048576 / 1.778) ≈ 768
-     w = 768 × 1.778 ≈ 1365
+     <latex>h = \sqrt{S / r} \approx 768</latex>
+     <latex>w = h \cdot r \approx 1365</latex>
   4. 对齐到64像素:
      target = (1344, 768)
 
@@ -156,7 +156,7 @@ end note
 ' ============================================================
 package "**第四阶段: 多卡切分**\nsplit_buckets_between_processes() //base.py:688//" as PKG_SPLIT #E3F2FD {
 
-    rectangle "**计算 effective_batch_size**\n//base.py:723-724//\n\neffective_batch_size =\n  batch_size × num_gpus × grad_accum\n\n例: batch=4, 2卡, grad_accum=2\n→ effective = 4×2×2 = 16\n\n每个bucket至少要16张图\n否则无法组成完整batch!" as EFF_BATCH
+    rectangle "**计算 effective_batch_size**\n//base.py:723-724//\n\n<latex>B_{\mathrm{eff}} = B \times N_{\mathrm{gpu}} \times G_{\mathrm{accum}}</latex>\n\n例: B=4, 2卡, G=2\n→ <latex>B_{\mathrm{eff}} = 4 \times 2 \times 2 = 16</latex>\n\n每个bucket至少要16张图\n否则无法组成完整batch!" as EFF_BATCH
 
     rectangle "**验证: 图够不够?**\n//base.py:729-813//\n\n对每个bucket检查:\n  图片数 × (repeats+1) ≥ effective_batch_size?\n\n不够时:\n  - allow_oversubscription=true\n    → 自动增大 repeats\n  - 否则 → **报错, 给出5种解决方案**" as VALIDATE
 

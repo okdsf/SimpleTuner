@@ -39,13 +39,13 @@ note right of TEMB
     shift_mlp, scale_mlp, **gate_mlp**
 
   shift/scale: 调整LayerNorm的输出分布
-    norm_out = (1 + scale) × norm(x) + shift
+    <latex>\hat{x} = (1 + \gamma) \cdot \mathrm{Norm}(x) + \beta</latex>
     "这一层应该关注什么范围的特征"
 
-  **gate: 控制这一层输出的强度** [0, +∞)
-    gate≈0 → 跳过这一层 (输出被消除)
-    gate≈1 → 正常贡献
-    gate>1 → 放大贡献
+  **gate: 控制这一层输出的强度** <latex>[0, +\infty)</latex>
+    <latex>\mathrm{gate} \approx 0</latex> → 跳过这一层 (输出被消除)
+    <latex>\mathrm{gate} \approx 1</latex> → 正常贡献
+    <latex>\mathrm{gate} > 1</latex> → 放大贡献
 
   **gate让模型自己学会:**
   - 高噪声步: 某些层的gate大 (需要大幅去噪)
@@ -60,15 +60,15 @@ note right of ROPE
 
   **1D RoPE (LLM文本):**
   给位置 m 的token, 将Q/K向量的
-  每对相邻元素 (q_{2i}, q_{2i+1}) 视为复数,
-  乘以旋转因子 e^{i·m·theta_i}:
+  每对相邻元素 <latex>(q_{2i},\; q_{2i+1})</latex> 视为复数,
+  乘以旋转因子 <latex>e^{i \cdot m \cdot \theta_k}</latex>:
 
-    q' = q × cos(m·θ) + rotate(q) × sin(m·θ)
+  <latex>q' = q \cos(m\theta) + \mathrm{rotate}(q) \sin(m\theta)</latex>
 
-  θ_i = 1 / 10000^(2i/d)
+  <latex>\theta_k = \frac{1}{10000^{2k/d}}</latex>
   **低频维度变化慢(捕捉远距离), 高频维度变化快(捕捉近距离)**
 
-  关键性质: Q_m · K_n 只依赖于 **m-n** (相对距离)
+  关键性质: <latex>\langle Q_m, K_n \rangle</latex> 只依赖于 <latex>m - n</latex> (相对距离)
   → 位置信息自动编码进注意力分数中
 
   **2D RoPE (Flux图像):**
@@ -80,8 +80,8 @@ note right of ROPE
     Q[..., 16:72]  → 用 pos[:,1]=**y坐标** 旋转
     Q[..., 72:128] → 用 pos[:,2]=**x坐标** 旋转
 
-  这样 Q_img(y1,x1) · K_img(y2,x2) 的注意力分数
-  自动编码了 **Δy = y1-y2** 和 **Δx = x1-x2**
+  这样 <latex>\langle Q(y_1,x_1),\; K(y_2,x_2) \rangle</latex> 的注意力分数
+  自动编码了 <latex>\Delta y = y_1 - y_2</latex> 和 <latex>\Delta x = x_1 - x_2</latex>
   → 模型天然感知二维空间的相对位置
 
   **Flux 2: axes_dim=(32, 32, 32, 32) — 4维 (T, H, W, L)!**
@@ -146,14 +146,14 @@ note right of ROPE
     Q[..., 16:72]  → 用 **y坐标** 旋转
     Q[..., 72:128] → 用 **x坐标** 旋转
 
-  Q_vid(t1,y1,x1) · K_vid(t2,y2,x2)
-  自动编码 **Δt, Δy, Δx** 三个方向的相对位置
+  <latex>\langle Q(t_1,y_1,x_1),\; K(t_2,y_2,x_2) \rangle</latex>
+  自动编码 <latex>\Delta t,\; \Delta y,\; \Delta x</latex> 三个方向的相对位置
   → 时空注意力天然感知"多远的帧+多远的位置"
 
   **Flux 1 文本ids为什么全零?**
   txt_ids = zeros(512, 3)
   → 所有文本token的位置 = (0, 0, 0)
-  → 文本之间: Δ=0, RoPE不影响 (cos(0)=1, sin(0)=0)
+  → 文本之间: <latex>\Delta=0</latex>, RoPE不影响 (<latex>\cos(0)=1,\;\sin(0)=0</latex>)
   → 文本和图像之间: 只有图像侧的坐标起作用
   → **文本没有空间位置, 这是正确的!**
   → 文本的顺序关系靠T5自带的位置编码
@@ -165,6 +165,9 @@ note right of ROPE
     → 训练1024, 推理2048 = 相对距离仍有意义
     → **天然支持可变分辨率!**
     这就是Flux能灵活切换分辨率的数学基础
+
+  **完整数学推导 (含旋转矩阵、内积证明):**
+  **→ 见 07_rope_mathematical_derivation.puml**
 end note
 }
 

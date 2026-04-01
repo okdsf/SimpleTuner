@@ -32,11 +32,11 @@ note right of TARGET_EPSILON
     在高噪声步效果好, 低噪声步信号弱
 
   **V-prediction** (SD2.x): 预测速度
-    v = sqrt(a)*noise - sqrt(1-a)*latent
+    <latex>v = \sqrt{\bar{\alpha}_t}\;\epsilon - \sqrt{1 - \bar{\alpha}_t}\;x_0</latex>
     高低噪声步都有稳定信号
 
   **Flow Matching** (Flux/SD3): 预测流
-    target = noise - latent
+    <latex>\mathrm{target} = \epsilon - x_0</latex>
     线性插值框架, 数学更简洁
 
   **本质都是同一件事的不同参数化**
@@ -52,7 +52,7 @@ package "**阶段F2: Loss函数计算**\n//common.py:4591-4769// loss()" as PKG_
 
     rectangle "**L2 Loss (默认 SDXL)**\n//common.py:4719//\n\nloss = F.mse_loss(\n    model_pred.float(),\n    target.float(),\n    reduction=\"none\"  // ← 不立即求均值!\n)\n\n**逐像素计算** → [B, 4, 128, 128]\n每个像素位置都有一个 loss 值\n后续权重函数需要这个粒度" as LOSS_L2 #90CAF9
 
-    rectangle "**Huber Loss (可选)**\n//common.py:4530-4531//\n\nloss = 2*c*(sqrt((pred-target)²+c²) - c)\n\n**L2 和 L1 的混合体:**\n误差小时 ≈ L2 (精确拟合细节)\n误差大时 ≈ L1 (不被离群值带飞)\n\nc 越小 → 越接近 L1 (鲁棒)\nc 越大 → 越接近 L2 (精确)" as LOSS_HUBER #64B5F6
+    rectangle "**Huber Loss (可选)**\n//common.py:4530-4531//\n\n<latex>L_\delta = 2c\left(\sqrt{(y - \hat{y})^2 + c^2} - c\right)</latex>\n\n**L2 和 L1 的混合体:**\n误差小时 ≈ L2 (精确拟合细节)\n误差大时 ≈ L1 (不被离群值带飞)\n\nc 越小 → 越接近 L1 (鲁棒)\nc 越大 → 越接近 L2 (精确)" as LOSS_HUBER #64B5F6
 
     rectangle "**Scheduled Huber (进阶)**\n//common.py:4546-4586//\n\nhuber_c 随时间步**动态调整**:\n\n  constant: c = 固定值\n  exponential: c = exp(-α*t)\n    低时间步 → 大c → 接近L2 (精抠细节)\n    高时间步 → 小c → 接近L1 (容忍大误差)\n  snr: c 跟随信噪比变化\n\n**直觉:** 高噪声时别太纠结精度,\n低噪声时要精雕细琢" as LOSS_SCHEDULED #42A5F5
 }
@@ -78,7 +78,7 @@ note left of LOSS_HUBER
 
   MSE 的问题: 对离群值敏感
   一个像素预测错得很离谱
-  → (pred-target)² 爆炸
+  → <latex>(y - \hat{y})^2</latex> 爆炸
   → 梯度被这个像素主导
   → 其他99%的像素学不到东西
 
@@ -96,9 +96,9 @@ end note
 ' ============================================================
 package "**阶段F3: SNR 加权 (Min-SNR-γ 策略)**\n//common.py:4698-4737// + //min_snr_gamma.py//" as PKG_SNR #FFF3E0 {
 
-    rectangle "**计算信噪比 SNR**\n//min_snr_gamma.py:17-39//\n\nalpha = sqrt(alphas_cumprod[t])\nsigma = sqrt(1 - alphas_cumprod[t])\n\n**SNR = (alpha / sigma)²**\n\nt 小 (低噪声) → alpha大, sigma小 → SNR大\nt 大 (高噪声) → alpha小, sigma大 → SNR小" as SNR_COMPUTE #FFE0B2
+    rectangle "**计算信噪比 SNR**\n//min_snr_gamma.py:17-39//\n\n<latex>\alpha_t = \sqrt{\bar{\alpha}_t}, \quad \sigma_t = \sqrt{1 - \bar{\alpha}_t}</latex>\n\n<latex>\mathrm{SNR}(t) = \left(\frac{\alpha_t}{\sigma_t}\right)^2</latex>\n\nt 小 (低噪声) → alpha大, sigma小 → SNR大\nt 大 (高噪声) → alpha小, sigma大 → SNR小" as SNR_COMPUTE #FFE0B2
 
-    rectangle "**Min-SNR-γ 权重**\n//common.py:4725-4733//\n\nmse_loss_weights = min(SNR, γ) / SNR\n\n当 SNR > γ 时:\n  权重 = γ / SNR < 1 → **压低**\n  低噪声步的 loss 被衰减\n\n当 SNR < γ 时:\n  权重 = SNR / SNR = 1 → **不变**\n  高噪声步的 loss 保持原样\n\n**效果: 削弱低噪声步的主导地位**" as SNR_WEIGHT #FFCC80
+    rectangle "**Min-SNR-γ 权重**\n//common.py:4725-4733//\n\n<latex>w(t) = \frac{\min\!\bigl(\mathrm{SNR}(t),\;\gamma\bigr)}{\mathrm{SNR}(t)}</latex>\n\n当 <latex>\mathrm{SNR} > \gamma</latex> 时:\n  <latex>w = \gamma / \mathrm{SNR} < 1</latex> → **压低**\n  低噪声步的 loss 被衰减\n\n当 <latex>\mathrm{SNR} \leq \gamma</latex> 时:\n  <latex>w = \mathrm{SNR} / \mathrm{SNR} = 1</latex> → **不变**\n  高噪声步的 loss 保持原样\n\n**效果: 削弱低噪声步的主导地位**" as SNR_WEIGHT #FFCC80
 
     rectangle "**应用权重**\n//common.py:4736-4737//\n\nmse_loss_weights = weights.view(-1, 1, 1, 1)\nloss = loss * mse_loss_weights\n\n**view(-1,1,1,1):** 把[B]变成[B,1,1,1]\n通过 broadcast 乘到 [B,4,128,128]\n同一张图所有像素用同一个权重" as SNR_APPLY #FFB74D
 }
@@ -127,9 +127,9 @@ note right of SNR_WEIGHT
 
   γ = 5 (常用默认值)
 
-  SNR=100 (低噪声) → 权重=5/100=0.05
-  SNR=5   (中等)   → 权重=5/5=1.0
-  SNR=0.1 (高噪声) → 权重=0.1/0.1=1.0
+  <latex>\mathrm{SNR}=100</latex> (低噪声) → <latex>w=5/100=0.05</latex>
+  <latex>\mathrm{SNR}=5</latex>   (中等)   → <latex>w=5/5=1.0</latex>
+  <latex>\mathrm{SNR}=0.1</latex> (高噪声) → <latex>w=0.1/0.1=1.0</latex>
 
   **低噪声步被压到5%, 高噪声步不变**
   这和之前讨论的语义偏置是同一维度:
@@ -207,7 +207,7 @@ note right of AUX_LOSS
 
   主Loss (diffusion_loss) 永远存在
   辅助Loss 按需叠加:
-    loss = main + α*aux1 + β*aux2 + ...
+    <latex>L = L_{\mathrm{main}} + \alpha L_{\mathrm{aux1}} + \beta L_{\mathrm{aux2}} + \cdots</latex>
 
   每种辅助Loss有自己的开关和权重系数
   **对SDXL基础训练: 纯MSE, 没有辅助项**
@@ -258,7 +258,7 @@ package "**阶段H: 梯度裁剪 + 权重更新**\n//trainer.py:5568-5681//" as 
 
     rectangle "**梯度裁剪**\n//trainer.py:5569-5643//\n\nif sync_gradients and max_grad_norm > 0:\n\n  **norm clipping (默认):**\n  clip_grad_norm_(params, max_grad_norm)\n  → 如果梯度L2范数 > max_grad_norm\n    → 等比例缩小所有梯度\n    → 保持方向不变, 只限制步长\n\n  **value clipping (可选):**\n  clip_grad_value_(params, max_grad_norm)\n  → 每个梯度元素独立截断\n\n**防止梯度爆炸导致训练崩溃**" as GRAD_CLIP #B2DFDB
 
-    rectangle "**优化器步进**\n//trainer.py:5665//\n\nself.optimizer.step()\n\n**用梯度更新模型权重:**\nθ_new = θ_old - lr * optimizer(grad)\n\n常用优化器:\n  AdamW: 带权重衰减的 Adam\n  Prodigy: 自适应学习率\n  Adafactor: 低内存 Adam 变体" as OPTIM_STEP #80CBC4
+    rectangle "**优化器步进**\n//trainer.py:5665//\n\nself.optimizer.step()\n\n**用梯度更新模型权重:**\n<latex>\theta_{t+1} = \theta_t - \eta \cdot \mathrm{Optimizer}(\nabla L)</latex>\n\n常用优化器:\n  AdamW: 带权重衰减的 Adam\n  Prodigy: 自适应学习率\n  Adafactor: 低内存 Adam 变体" as OPTIM_STEP #80CBC4
 
     rectangle "**梯度清零**\n//trainer.py:5679//\n\noptimizer.zero_grad(\n    set_to_none=True  // ← 不是设为0, 是设为None\n)\n\n**为什么 set_to_none=True?**\n设为0: 保留 .grad 张量, 占内存\n设为None: 释放 .grad 张量\n→ 节省显存, 下次反向传播重新分配\n\n**一个 step 的完整循环结束**\n回到阶段C, 取下一个 batch" as ZERO_GRAD #4DB6AC
 }
