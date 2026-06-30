@@ -1,4 +1,6 @@
 @startuml Flux_Encoding_and_Forward
+!pragma svgsize 8192
+skinparam dpi 150
 !theme plain
 skinparam backgroundColor #FEFEFE
 skinparam defaultFontName "Microsoft YaHei"
@@ -8,6 +10,8 @@ skinparam RoundCorner 8
 skinparam PackageBorderThickness 2
 skinparam NoteBackgroundColor #FFFFDD
 skinparam NoteBorderColor #999999
+skinparam MaxMessageSize 500
+skinparam wrapWidth 400
 
 title **Flux 系列训练链路 — 编码 → 时间步 → 前向**\nFlux 1.x (CLIP-L + T5) vs Flux 2.x (Mistral-3)\n代码: flux/model.py, flux2/model.py, common.py
 

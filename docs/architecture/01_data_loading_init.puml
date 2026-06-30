@@ -1,4 +1,6 @@
 @startuml SDXL_Data_Loading_Init
+!pragma svgsize 8192
+skinparam dpi 150
 !theme plain
 skinparam backgroundColor #FEFEFE
 skinparam defaultFontName "Microsoft YaHei"
@@ -8,6 +10,8 @@ skinparam RoundCorner 8
 skinparam PackageBorderThickness 2
 skinparam NoteBackgroundColor #FFFFDD
 skinparam NoteBorderColor #999999
+skinparam MaxMessageSize 500
+skinparam wrapWidth 400
 
 title **SimpleTuner SDXL 数据加载链路 — 初始化阶段 (v3 完整溯源版)**\n从用户配置 → 图片文件夹 → DataLoader 就绪
 

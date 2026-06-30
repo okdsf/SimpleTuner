@@ -1,0 +1,128 @@
+@startuml Caption_Intervention_Timeline
+!pragma svgsize 8192
+skinparam dpi 150
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontName "Microsoft YaHei"
+skinparam defaultFontSize 11
+skinparam ArrowThickness 2
+skinparam RoundCorner 8
+skinparam PackageBorderThickness 2
+skinparam NoteBackgroundColor #FFFFDD
+skinparam NoteBorderColor #999999
+skinparam MaxMessageSize 500
+skinparam wrapWidth 400
+
+title **标签(Caption)介入训练的完整时间线**\nSDXL vs FLUX 1.x vs FLUX 2.x\n基于 SimpleTuner 源码追踪\n代码: collate.py, common.py, sdxl/model.py, flux/model.py, flux2/model.py
+
+' ============================================================
+' 阶段0: 预编码缓存（训练前，只跑一次）
+' ============================================================
+package "**阶段0: 预编码缓存 (训练前)**" as PKG_PRECACHE #FFF3E0 {
+
+    rectangle "**用户的标签文本**\n\n""ohwx woman, black coat,\nstanding in park""" as CAPTION_TEXT #FFFFFF
+
+    rectangle "**SDXL 双编码器**\n//sdxl/model.py:136-206//\n\nCLIP-L → hidden_states[-2] [1,77,768]\nOpenCLIP-G → hidden_states[-2] [1,77,1280]\n                 + pooled [1,1280]\n\n拼接: prompt_embeds [1, **77, 2048**]\npooled: pooled_prompt_embeds [1, **1280**]" as SDXL_ENCODE #FFE0B2
+
+    rectangle "**FLUX 1 双编码器**\n//flux/model.py:480-503//\n\nCLIP-L → pooled [1, **768**]\nT5-XXL → sequence [1, **512, 4096**]\n         + attention_mask [1, 512]\n\nprompt_embeds = T5 序列\npooled = CLIP-L pooled" as FLUX1_ENCODE #FFCC80
+
+    rectangle "**FLUX 2 单编码器**\n//flux2/model.py//\n\nMistral-3-24B\n→ 从 layer 10/20/30 抽取特征\n→ 拼接 [1, seq, 6144]\n\n无独立 pooled（从序列中导出）" as FLUX2_ENCODE #FFB74D
+
+    rectangle "**保存为 .pt 文件**\n//text_embeds.py:461//\n\n编码完成后文本编码器\n从显存中卸载\n//trainer.py:2494//\n\n之后训练不再调用编码器\n标签变成一组**固定数字**" as SAVE_CACHE #FFF9C4
+
+    CAPTION_TEXT --> SDXL_ENCODE
+    CAPTION_TEXT --> FLUX1_ENCODE
+    CAPTION_TEXT --> FLUX2_ENCODE
+    SDXL_ENCODE --> SAVE_CACHE
+    FLUX1_ENCODE --> SAVE_CACHE
+    FLUX2_ENCODE --> SAVE_CACHE
+}
+
+note right of SAVE_CACHE
+  **关键: 标签在此刻冻结**
+
+  从此以后, "ohwx woman" 永远是
+  同一组浮点数向量 E_ohwx
+
+  训练改变的是网络权重 W,
+  不是 E_ohwx 本身
+end note
+
+' ============================================================
+' 阶段1: collate_fn — 标签与图像首次同框
+' ============================================================
+package "**阶段1: collate_fn (每个batch)**" as PKG_COLLATE #E3F2FD {
+
+    rectangle "**读取 VAE 缓存**\n//collate.py:639//\n\nlatent_batch = 图像的 VAE latent\n\nSDXL: [B, 4, 128, 128]\nFLUX 1: [B, 16, 32, 32]\nFLUX 2: [B, 128, 64, 64]" as VAE_READ #BBDEFB
+
+    rectangle "**Caption Dropout**\n//collate.py:577-585//\n\nif rand() < dropout_probability:\n    caption = \"\"  ← 清空标签\n\n→ 空标签使用预缓存的\n   __caption_dropout__ embedding\n\n**这一步直接训练了**\n**"无标签也生成"的能力**" as CAPTION_DROPOUT #FFCDD2
+
+    rectangle "**读取 Text Embed 缓存**\n//collate.py:1066-1067//\n\nprompt_embeds = 标签序列 embedding\nadd_text_embeds = 标签 pooled embedding\nencoder_attention_mask = [FLUX] T5 mask\n\n⭐ **标签与图像首次出现在同一个 dict 中**\n⭐ **但此时无任何数学交互**" as TEXT_READ #C8E6C9
+
+    rectangle "**[SDXL] 计算 time_ids**\n//collate.py:1071-1078//\n\n[原始高, 原始宽, 裁切y, 裁切x, 目标高, 目标宽]\n→ 来自图像几何属性, 不来自标签" as TIME_IDS #E1BEE7
+
+    VAE_READ -[hidden]-> TEXT_READ
+    CAPTION_DROPOUT --> TEXT_READ
+    TEXT_READ --> TIME_IDS
+}
+
+' ============================================================
+' 阶段2: prepare_batch — 移到GPU + 加噪
+' ============================================================
+package "**阶段2: prepare_batch (GPU准备)**" as PKG_PREPARE #F3E5F5 {
+
+    rectangle "**标签 embedding 移到 GPU**\n//common.py:4295-4305//\n\nencoder_hidden_states = prompt_embeds.to(GPU)\nadded_cond_kwargs[\"text_embeds\"] = pooled.to(GPU)\nadded_cond_kwargs[\"time_ids\"] = time_ids.to(GPU)\n\n⭐ **标签在GPU上了, 但仍无交互**" as MOVE_GPU #CE93D8
+
+    rectangle "**生成噪声 + 时间步 + 加噪**\n//common.py:4339-4393//\n\nnoise = randn_like(latents)\ntimesteps = 采样\n\nDDPM: noisy = add_noise(latents, noise, t)\nFlow: noisy = (1-σ)·latents + σ·noise\n\n→ 这些完全来自图像, 标签不参与" as ADD_NOISE #B39DDB
+
+    MOVE_GPU --> ADD_NOISE
+}
+
+' ============================================================
+' 阶段3: model_predict — 标签真正介入！
+' ============================================================
+package "**阶段3: model_predict ★标签真正介入★**" as PKG_FORWARD #FFEBEE {
+
+    rectangle "**SDXL UNet Forward**\n//sdxl/model.py:258-313//\n\n1. temb = timestep编码 + **aug_emb**(pooled+time_ids)\n   → ⭐ pooled 第一次数学介入(与timestep相加)\n\n2. conv_in → ResNet → **Self-Attention** (attn1)\n   → ✗ 标签不参与, 纯图像\n\n3. **Cross-Attention** (attn2)\n   Q = to_q(图像特征)\n   K = to_k(**标签序列 [B,77,2048]**) ← ⭐ 核心介入\n   V = to_v(**标签序列**)\n   → 单向: 图像查询标签, 标签不变\n\n4. FFN → 下一层" as SDXL_FORWARD #FFCDD2
+
+    rectangle "**FLUX 1 Transformer Forward**\n//flux/model.py:540-695//\n\n1. temb = timestep + guidance + **CLIP-L pooled [768]**\n   → ⭐ pooled 第一次数学介入\n\n2. **19个 Double Stream Block:**\n   AdaLayerNormZero(temb) ← ⭐ 标签调制norm\n   Q_img = to_q(图像)    K_img = to_k(图像)  V_img = to_v(图像)\n   Q_txt = add_q(**T5序列**)  K_txt = add_k(...)  V_txt = add_v(...)\n   Q = cat([Q_txt, Q_img])  ← ⭐ **Joint Attention 双向交互**\n   SDPA → 拆分 → 各自FFN\n\n3. cat([文本,图像]) → **38个 Single Stream Block:**\n   文本图像已合并, **完全不可分**\n   Self-Attention 在合并序列上\n   → 文本token和图像token互相影响\n   → ✗ 这38层的权重 **不区分标签/图像**" as FLUX1_FORWARD #EF9A9A
+
+    rectangle "**FLUX 2 Transformer Forward**\n\n1. temb = timestep + guidance (无pooled文本)\n\n2. **8个 Double Stream Block:**\n   结构类似FLUX 1, 但更宽 (inner_dim=6144)\n   Joint Attention 双向交互\n\n3. **48个 Single Stream Block** (dev)\n   或 24个 (klein-9b) / 20个 (klein-4b)\n   文本图像合并, 完全不可分\n   → ✗ 这些层的权重 **不区分标签/图像**\n\n**FLUX 2 dev的Single Stream比FLUX 1更多**\n**(48 vs 38), 衰退风险更大**" as FLUX2_FORWARD #E57373
+}
+
+' ============================================================
+' 阶段4: Loss 计算
+' ============================================================
+package "**阶段4: Loss + 反向传播**" as PKG_LOSS #E8F5E9 {
+
+    rectangle "**target 计算**\n//common.py:3504-3527//\n\nSDXL (EPSILON): target = noise\nFLUX (FLOW_MATCHING): target = noise - latents\n\n**target 完全来自图像和噪声**\n**标签不参与 target 的计算**" as TARGET #C8E6C9
+
+    rectangle "**loss = (model_pred - target)²**\n//common.py:4625//\n\nloss.backward()\n//trainer.py:5556//\n\n梯度传遍**所有可训练参数**\n包括与标签无关的层" as LOSS #A5D6A7
+}
+
+' ============================================================
+' 连接
+' ============================================================
+PKG_PRECACHE -[hidden]-> PKG_COLLATE
+PKG_COLLATE -[hidden]-> PKG_PREPARE
+PKG_PREPARE -[hidden]-> PKG_FORWARD
+PKG_FORWARD -[hidden]-> PKG_LOSS
+
+' ============================================================
+' 总结注释
+' ============================================================
+note bottom of PKG_FORWARD
+  **标签介入的精确时刻:**
+
+  | 阶段 | 标签状态 | 标签与图像交互 |
+  |---|---|---|
+  | 预编码 | 编码为固定向量 | ✗ 无交互 |
+  | collate_fn | 打包进同一dict | ✗ 无交互 |
+  | prepare_batch | 移到GPU | ✗ 无交互 |
+  | temb构建 | pooled与timestep相加 | ⭐ 第一次数学交互 |
+  | Cross/Joint Attn | 序列参与注意力 | ⭐ 核心深度交互 |
+  | Single Stream | 合并后不可分 | ⭐ 完全融合 |
+  | Loss计算 | 不参与target | ✗ |
+end note
+
+@enduml

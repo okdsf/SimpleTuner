@@ -1,0 +1,1902 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{mathtools}
+\usepackage{bm}
+\usepackage{geometry}
+\geometry{margin=2.4cm}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xeCJK}
+\setCJKmainfont{SimSun}
+
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{corollary}[theorem]{Corollary}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{remark}[theorem]{Remark}
+\newtheorem{caveat}[theorem]{Caveat}
+\newtheorem{assumption}[theorem]{Assumption}
+
+\DeclareMathOperator{\Cov}{Cov}
+\DeclareMathOperator{\Var}{Var}
+\DeclareMathOperator{\tr}{tr}
+\DeclareMathOperator{\KL}{KL}
+\DeclareMathOperator{\id}{id}
+\DeclareMathOperator{\supp}{supp}
+\DeclareMathOperator*{\argmin}{arg\,min}
+\DeclareMathOperator*{\argmax}{arg\,max}
+
+% ---- number sets / expectation ----
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Prob}{\mathbb{P}}
+\newcommand{\R}{\mathbb{R}}
+% ---- calligraphic objects ----
+\newcommand{\cH}{\mathcal{H}}   % reachable / hypothesis space (NOT the Hessian H_Y)
+\newcommand{\cL}{\mathcal{L}}   % ridge-regularized linear response operator (NOT a projection)
+\newcommand{\cN}{\mathcal{N}}
+\newcommand{\cS}{\mathcal{S}}   % composite state space
+\newcommand{\cG}{\mathcal{G}}   % global COV / geometry state space
+\newcommand{\cB}{\mathcal{B}}   % potential (function) space
+\newcommand{\cU}{\mathcal{U}}   % admissible control set
+\newcommand{\cD}{\mathcal{D}}   % dataset (D1, D2)
+\newcommand{\cF}{\mathcal{F}}
+\newcommand{\cT}{\mathcal{T}}   % tangent space
+\newcommand{\cX}{\mathcal{X}}
+\newcommand{\cY}{\mathcal{Y}}
+\newcommand{\cC}{\mathcal{C}}
+\newcommand{\cZ}{\mathcal{Z}}
+\newcommand{\cV}{\mathcal{V}}
+% ---- operators with fixed meaning (symbol-disambiguation, see Sec. 0) ----
+\newcommand{\Rstr}{\mathcal{R}}     % restriction / global->local projection operator  R_z, R_S
+\newcommand{\Center}{\mathsf{C}}    % fiberwise centering operator C_{i-1}
+\newcommand{\ProjectOp}{\Pi}        % orthogonal projection (only the lambda=0 limit of cL)
+\newcommand{\COV}{\mathrm{COV}}     % posterior score covariance geometry (never "convolution")
+\newcommand{\gres}{\bm{\mathfrak{g}}} % composite residual (g^{(0)}, g^{(G)})
+\newcommand{\Range}{\operatorname{Range}}
+\newcommand{\Sym}{\operatorname{Sym}}
+
+\title{\textbf{全集--真子集多阶段对齐的状态递推理论}\\[6pt]
+\large 残差势能、全局 COV 几何、纤维继承/重建与复合二次型最优控制\\[4pt]
+\normalsize（严格化重写：补全逻辑跳步、消除误导性符号，逐步建立逻辑链）}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+本文把"全集 $D_1$ 与真子集 $D_2\subsetneq D_1$ 的两阶段对齐"整理为一套\textbf{状态递推控制理论}。第一阶段用 $D_1$ 训练后，模型不仅得到一个全局数据场 / COV 几何估计 $G_1$，也在该几何上为 $D_2$ 中的子点建立了势能估计 $B_1^S$；第二阶段用 $D_2$ 继续训练，真正的决策不是"学不学"，而是\textbf{继承第一阶段的同一 fiber，还是用真子集重建 fiber 以降低全集投影偏差}。该决策由偏差、方差、可达性、势能残差与终端目标共同决定。
+
+\medskip
+本稿是对原始讨论稿的\textbf{严格化重写}。相对原稿，本稿（i）统一并消除误导性符号（$\COV$ 而非卷积、三个不同的 $R$、Hessian $H_Y$ 与假设空间 $\cH_i$、投影 $\Pi$ 与线性响应 $\cL$）；（ii）补全原稿中以"$\approx$"或未定义算子（$\Rstr_z$、$A_S$、$\delta_B$）掩盖的逻辑跳步，给出显式定义与所需假设；（iii）对每一结论标注其层级（精确恒等式 / 局部二阶近似 / 经验假设）。所有"某策略更好"的判断都落到\textbf{可测诊断量}，而非无条件定理。
+
+\medskip
+\noindent\fbox{\parbox{0.96\textwidth}{%
+\textbf{核心状态递推}：$\displaystyle S_{i+1}=F_i(S_i,u_i)=S_i+\eta_i\,\cL_i(S_i,u_i)\,\gres_i(S_i,u_i)+E_i$，\;
+$S_i=(B_i,G_i)$，残差 $\gres_i=(g_i^{(0)},\sqrt{\rho_G}\,g_i^{(G)})$ 由势能残差与全局 COV 残差堆叠；$\cL_i$ 是带岭收缩的\emph{线性响应算子}，而非正交投影。
+}}
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% ----- S0 (sec:prelim) -----
+\section{使用说明、符号约定与结论分级}\label{sec:prelim}
+
+本文是对原始讨论稿《全集--真子集多阶段对齐理论框架与策略空间》的\textbf{严格化重写}。重写的目标有三：（a）补全原稿以“$\approx$”或未定义算子掩盖的逻辑跳步，使每一步推理链显式且可检验；（b）消除原稿中误导性或一符多义的记号；（c）对每一条结论显式标注其逻辑地位，使读者在引用时即可判断它在何种前提下成立。本节为元章节（不含定理），仅约定阅读方式、结论分级与全篇贯通的符号修正。后文各节的 boxed 核心结论均按本节的分级规则加标。
+
+\subsection*{COV 的含义}
+全篇“$\COV$ 场”一律指 \emph{posterior score covariance / 数据场协方差几何}（即对 posterior responsibility $\alpha_i$ 取的 score 协方差 $\Sigma_i^D=\Cov_{\alpha_i}(s_Y)$ 及其全局聚合），\textbf{绝不指卷积 convolution}。原稿在个别处误写为 “CONV”，凡此皆应读作 $\COV$。卷积仅以光滑核 $K_t$ 的作用出现，且始终显式写作 $q_t(x|y)=\int K_t(x-x')\,q(x'|y)\,dx'$，不与 $\COV$ 混用。
+
+\subsection*{结论的三层分级}
+本文所有结论分属三层，其成立条件、可证伪性与“无条件成立”的资格各不相同。把不同层混为一谈——尤其把第二、三类当第一类引用——是本框架最主要的 over-claiming 来源。三层定义如下。
+
+\begin{enumerate}[label=\textbf{第\arabic*类},leftmargin=*]
+\item \textbf{精确恒等式（exact identities）。}只要陈述中声明的测度前提（绝对连续性、目标势能存在、fiber 归一化、Girsanov 可积性等）成立，此类结论\textbf{无条件}成立，是定义与变分计算的直接后果，不依赖任何线性化或近似，前提满足即不可证伪。
+\item \textbf{局部二阶近似（local 2nd-order approximations）。}此类结论\textbf{并非}恒等式，其成立需\textbf{显式附带}假设：局部线性化有效、步长 $\eta_i$ 足够小、被作用对象足够正则、且优化在最优点附近。脱离这些假设，误差进入残差项 $E_i$ 而不再可控。引用时必须同时声明上述近似前提。
+\item \textbf{经验假设 / 可测诊断（empirical assumptions / measurable diagnostics）。}此类陈述涉及具体数据、架构与训练机制的实际行为，原则上\textbf{不能}写成无条件定理，只能作为可证伪的假设或可测量的诊断量给出，其“真”由实验在给定语境下检验，而非由推导保证。
+\end{enumerate}
+
+\noindent 据此，原稿的若干典型断言归层如下：
+\begin{itemize}[leftmargin=*]
+\item RLHF 的\textbf{残差势能形式}（目标势能与基座之差落为 Gibbs 型残差 reward 的变分结构）为\textbf{第一类}——精确变分结构，见 Sec.~\ref{sec:potential}。
+\item \textbf{LoRA 可达投影}（将有限参数 / LoRA 更新写成在可达子空间 $\cH_i$ 上的投影更新）、\textbf{局部线性响应}（训练算子 $\cL_i$ 的线性化）、\textbf{$\COV\to$ 局部景观的投影}（全局几何 $G_i$ 经 $\Rstr_z$ 还原为局部二阶型 $\Sigma_i^{\mathrm{loc}}(z)$）均为\textbf{第二类}——局部二阶近似，所需线性化 / 小步长 / 正则性假设在 Sec.~\ref{sec:cov}、Sec.~\ref{sec:control}、Sec.~\ref{sec:biasvar} 显式补足。
+\item 任何“\textbf{某训练策略更好}”的判断\textbf{必须}是\textbf{第三类}——落到可测诊断量（偏差、方差、可达性、势能残差的可测代理），而非无条件定理，见 Sec.~\ref{sec:diagnostics}。
+\end{itemize}
+
+\subsection*{阅读重点}
+全篇最易被误读、也最需要先行确立的抽象，归纳于下框。
+
+\begin{remark}[阅读重点：$B_1^S$ 的正确解读]\label{s0:rmk:reading}
+\noindent\fbox{\parbox{0.95\linewidth}{%
+第一阶段（用全集 $D_1$ 训练）后，限制在真子集 $S=D_2$ 上得到的子集势能状态 $B_1^S$ \textbf{并非}“已经正确学会 $D_2$”的标志。它的准确含义是：\textbf{全集几何 $G_1$ 经限制算子 $\Rstr_S$ 投影到子集 fiber $S$ 上之后，得到的一个稳定但可能有偏的势能估计}。其“稳定”来自全集样本带来的低方差，其“偏”来自全集投影未必对齐子集真实目标。因此第二阶段（用 $D_2$ 继续训练）的核心问题，\textbf{不是“学不学 $D_2$”，而是是否纠正这一投影偏差}：继承第一阶段的同一 fiber 意味着低方差、低残差但保留偏差；用真子集重建 fiber 意味着可能降低投影偏差，但承担更高的方差与可达性风险。
+}}
+\end{remark}
+
+\subsection*{符号与跳步修正清单}
+为消除原稿一符多义与跳步，本稿强制以下修正与约定。引用任一记号时以此为准。
+
+\begin{remark}[符号与跳步修正清单]\label{s0:rmk:fixes}
+\begin{itemize}[leftmargin=*]
+\item \textbf{$\COV\ne$ 卷积。}$\COV$ 指 posterior score covariance / 数据场协方差几何（$\Sigma_i^D=\Cov_{\alpha_i}(s_Y)$ 及其全局态 $G_i$）；原稿偶写的 “CONV” 一律读作 $\COV$，与卷积 convolution 无关。
+\item \textbf{三个 $R$ 严格分离。}（i）reward 记为 $R_i$（plain $R$，带阶段下标）；（ii）restriction / 全局$\to$局部算子记为 $\Rstr_z,\Rstr_S$（calligraphic $\Rstr=\mathcal R$）；（iii）隐变量残差因子记为分量 $R$，且\textbf{仅}出现在隐变量元组 $y=(A,P,W,R)$ 内部（$A$ 风格/域、$P$ 角色/实体、$W$ 可控属性、$R$ 残差视觉因子），不作独立标量使用。
+\item \textbf{Hessian $H_Y\ne$ 子空间 $\cH_i$。}条件 log-density 的 Hessian 记为 $H_Y=\nabla_x^2\log q_t(x|y)$（plain $H$，二阶导张量）；可达 / 假设 / LoRA 子空间记为 $\cH_i$（calligraphic $\cH$，线性子空间）。二者是不同对象，\textbf{绝不}以裸 $H_i$ 指代子空间。
+\item \textbf{训练算子是线性响应 $\cL_i$，不是投影 $\ProjectOp$。}$\cL_i$ 为带岭收缩（ridge $\lambda_i$）的\emph{线性响应算子}，一般\textbf{不是}投影；仅当 $\lambda_i\to 0$、值域闭、度量 $M_i$ 固定的极限下，$\cL_i$ 才退化为正交投影 $\ProjectOp$。叙述中不得把 $\cL_i$ 称作投影，见 Sec.~\ref{sec:control}。
+\item \textbf{补足被跳步掩盖的算子定义。}原稿以 “$\approx$” 或未加定义的 $\Rstr_z$、$A_S$、$\delta_B$ 掩盖的步骤，本稿给出显式定义：$\Rstr_z:\cG\to\Sym$ 的局部还原与子集还原 $\Rstr_S$ 在 Sec.~\ref{sec:cov} 定义；偏差 / 方差分解中的 $A_S$、$\delta_B$ 类量在 Sec.~\ref{sec:biasvar} 给出严格定义与所需假设。fiberwise 中心化算子统一为 $\Center_{i-1}[f](c,x)=f(c,x)-\E_{p_{i-1,t}(\cdot|c)}[f(c,X)]$。
+\end{itemize}
+
+\noindent\emph{全局状态记号备查。}复合状态 $S_i=(B_i,G_i)\in\cS=\cB\times\cG$，其中 $B_i$ 为累计势能状态、$G_i$ 为全局 $\COV$ / 几何状态；复合残差 $\gres_i=(g_i^{(0)},\sqrt{\rho_G}\,g_i^{(G)})$ 由势能残差 $g_i^{(0)}=\Center_{i-1}[U_i^*-B_{i-1}]$ 与全局 $\COV$ 残差 $g_i^{(G)}=G_i^*-G_{i-1}$ 堆叠；训练控制 $u_i=(\nu_i,T_i,\gamma_i,\Phi_i^\dagger,\cH_i,M_i,\lambda_i,\eta_i)$。核心递推 $S_{i+1}=S_i+\eta_i\,\cL_i\,\gres_i+E_i$ 中，$E_i$ 为高阶残差项（承接第二类近似的误差）。
+\end{remark}
+
+% ----- S1 (sec:state) -----
+\section{总论与状态空间}\label{sec:state}
+
+本节给出全文的核心论点与状态空间定义，并写出贯穿全文的状态递推方程。后续各节（数据测度、COV 几何、残差势能、双残差、复合二次型控制等）都是对本节算子 $\cL_i$、残差 $\gres_i$ 与误差项 $E_i$ 的具体化。
+
+\subsection{核心论点：策略空间受状态递推控制}
+
+本理论\emph{不}主张存在一份固定的数据配方使其在所有阶段、所有任务中恒为最优。我们要证明的是一条结构性命题：在“全集 $D_1$ 与真子集 $D_2\subsetneq D_1$ 的多阶段对齐”中，可行策略的空间本身被一个\textbf{状态递推（state recursion）}所支配。具体而言，每一步训练的目标（target potential 与 target geometry）由当前模型状态重新定义；该步训练的结果又改变下一步所面对的四类对象：
+
+\begin{enumerate}[label=(\roman*)]
+  \item 累计势能 $B_i$（cumulative potential），即相对基座模型的对数密度比；
+  \item 全局 COV 几何 $G_i$（posterior score covariance / data-field geometry，见 Sec.~\ref{sec:cov}）；
+  \item 训练度量 $M_i$（training metric）与其诱导的可达响应；
+  \item 可达空间 $\cH_i$（reachable / hypothesis / LoRA subspace）。
+\end{enumerate}
+
+因此“哪种策略更好”不是一个无条件定理，而是一个依赖当前状态的条件最优问题。下面先精确定义状态对象，再写出递推，最后把上述论点落为三条带层级标注的推论。
+
+\subsection{复合状态空间}
+
+\begin{definition}[复合状态空间与状态对象]\label{def:s1:state-space}
+设
+\begin{equation}\label{eq:s1:state-space}
+  \cS=\cB\times\cG,\qquad S_i=(B_i,\,G_i)\in\cS,
+\end{equation}
+其中：
+\begin{itemize}
+  \item $\cB$ 是\emph{纤维中心化}（fiberwise-centered）的累计势能函数空间。其元素
+  $B_i(c,x,t)=\log\!\bigl[p_{i,t}(x|c)/p_{0,t}(x|c)\bigr]$ 是阶段-$i$ 模型相对基座模型 $p_{0,t}$ 的对数密度比；只依赖条件 $c$ 的常数被归一化吸收，故在每个 caption fiber 上以中心化算子
+  $\Center_{i-1}[f](c,x)=f(c,x)-\E_{p_{i-1,t}(\cdot|c)}[f(c,X)]$ 取等价类（详见 Sec.~\ref{sec:potential}）。
+  \item $\cG$ 是\emph{全局} COV / posterior-cumulant 几何空间。其元素 $G_i$ 刻画由阶段数据测度 $\nu_i$ 与 posterior responsibility $\alpha_i$ 诱导的全局二阶（score covariance）几何；它通过 restriction 算子 $\Rstr_z:\cG\to\Sym$ 投影为局部点 $z=(c,x,t)$ 处的局部二阶型 $\Sigma_i^{\mathrm{loc}}(z)$（详见 Sec.~\ref{sec:cov}）。
+\end{itemize}
+\end{definition}
+
+\begin{remark}\label{rem:s1:global-not-local}
+强调 $G_i$ 是\emph{全局}几何而非某个局部点的 Hessian：局部景观 $\Sigma_i^{\mathrm{loc}}(z)\approx\Rstr_z(G_i)$ 由全局几何在目标 fiber 上的投影给出。这一区分是后文“全集投影偏差”（$\Rstr_S(G_1)$ 对子集 $S$ 可能有偏）的数学基础（见 Sec.~\ref{sec:case}）。
+\end{remark}
+
+\subsection{状态递推}
+
+\begin{definition}[核心状态递推]\label{def:s1:recursion}
+第 $i$ 步的训练控制为 $u_i$（见下文 \eqref{eq:s1:control}），状态按下式演化：
+\begin{equation}\label{eq:s1:recursion}
+  \boxed{\;S_{i+1}=F_i(S_i,u_i)=S_i+\eta_i\,\cL_i(S_i,u_i)\,\gres_i(S_i,u_i)+E_i\;}
+\end{equation}
+其中 $\eta_i$ 是学习强度（step），$\cL_i$ 是当前训练机制诱导的\textbf{带岭收缩的线性响应算子}（ridge-regularized linear response operator，见 Sec.~\ref{sec:control}），$\gres_i$ 是\textbf{复合残差}（见 Sec.~\ref{sec:dualres}），$E_i$ 收集所有未被一阶展开捕获的项。
+\end{definition}
+
+\paragraph{块结构（block structure）。}递推 \eqref{eq:s1:recursion} 在 $\cS=\cB\times\cG$ 上是分量耦合而\emph{块结构化}的：复合残差按势能分量与几何分量堆叠，
+\begin{equation}\label{eq:s1:gres-block}
+  \gres_i=\bigl(g_i^{(0)},\;\sqrt{\rho_G}\,g_i^{(G)}\bigr),\qquad
+  g_i^{(0)}=\Center_{i-1}\!\bigl[U_i^*-B_{i-1}\bigr],\quad
+  g_i^{(G)}=G_i^*-G_{i-1},
+\end{equation}
+其中 $g_i^{(0)}\in\cB$ 是势能残差（target potential $U_i^*$ 相对当前势能 $B_{i-1}$ 的中心化差），$g_i^{(G)}\in\cG$ 是全局 COV 几何残差（target geometry $G_i^*$ 相对 $G_{i-1}$ 之差），$\rho_G>0$ 是两分量的相对权重；算子 $\cL_i$ 相应地块作用于 $(B,G)$ 两个分量上。势能残差的精确变分来历见 Sec.~\ref{sec:dualres}，算子 $\cL_i$ 的构造见 Sec.~\ref{sec:control}。
+
+\begin{caveat}[$\cL_i$ 不是投影]\label{cav:s1:not-projection}
+$\cL_i$ 是\emph{线性响应}而非正交投影：一般情形下它带岭正则 $\lambda_i>0$ 与度量 $M_i$，并\emph{不}幂等。只有在 $\lambda_i\to 0$、闭值域（closed-range）且固定度量的极限下，$\cL_i$ 才退化为某子空间上的正交投影 $\ProjectOp_{\cH_i}$。原始讨论稿曾把它直接写作 $\ProjectOp_{\cH_i}^{M_i[G_i],\lambda_i}$ 而以“投影”称之，这是误导性的；本文统一称 $\cL_i$ 为线性响应算子，仅在上述极限处引用 $\ProjectOp$。
+\end{caveat}
+
+\begin{remark}[层级标注：递推 \eqref{eq:s1:recursion} 属第二类]\label{rem:s1:tier-recursion}
+\textbf{第二类（局部二阶近似）。}递推 \eqref{eq:s1:recursion} 是把一步训练对状态的影响在当前状态 $S_i$ 处作一阶（线性响应）展开的结果，其有效性依赖如下局部化假设：
+\begin{enumerate}[label=(\alph*)]
+  \item \emph{小步长 / 局部线性化}：$\eta_i$ 足够小，使训练算子在 $S_i$ 邻域内可由线性响应 $\cL_i$ 近似；
+  \item \emph{局部性}：$G_i$ 到局部景观的 restriction $\Rstr_z$ 在目标 fiber 邻域内近似线性；
+  \item \emph{有限样本与模型误差可控}：emission/smoothing 估计、COV 估计、标签映射 $T_i$ 的误差进入 $E_i$ 而不破坏一阶项的主导地位。
+\end{enumerate}
+误差项 $E_i$ 正是收集这些被略去的对象：非线性高阶项、有限步长残差、采样/经验测度误差、以及模型容量不足导致的可达性误差。当上述假设失效时，应回到精确表述（第一类，见 Sec.~\ref{sec:dualres} 的残差势能恒等式）或诉诸可测诊断（第三类，见 Sec.~\ref{sec:diagnostics}）。
+\end{remark}
+
+\subsection{控制变量}
+
+\begin{definition}[第 $i$ 步训练控制]\label{def:s1:control}
+\begin{equation}\label{eq:s1:control}
+  u_i=\bigl(\nu_i,\;T_i,\;\gamma_i,\;\Phi_i^\dagger,\;\cH_i,\;M_i,\;\lambda_i,\;\eta_i\bigr)\in\cU_i,
+\end{equation}
+其各分量含义为：阶段隐变量测度 $\nu_i$（数据选择，见 Sec.~\ref{sec:data}）；标签映射 $T_i:y\mapsto c$；data-tilt 指数 $\gamma_i\in[0,1]$（阶段数据相对基座的混合权重）；preference potential $\Phi_i^\dagger$（偏好/reward 势能）；可达/假设/LoRA 子空间 $\cH_i$；训练度量 $M_i$；岭正则 $\lambda_i$；学习强度 $\eta_i$。控制 $u_i$ 取自第 $i$ 步的可行集 $\cU_i$。
+\end{definition}
+
+\subsection{三条推论}
+
+下面把核心论点落为三条推论。它们均依赖具体任务的可测诊断量，故标注为结构性 / 经验层级。
+
+\begin{proposition}[最优策略是条件最优，而非固定排序]\label{prop:s1:pareto}
+\textbf{第三类（结构性 / 经验）。}给定状态 $S_i$ 与可行控制集 $\cU_i$，递推 \eqref{eq:s1:recursion} 上的多步最优控制问题一般不存在跨状态、跨任务恒定的策略排序：最优策略是 Pareto / Bellman 型的\emph{条件最优}。势能残差 $g_i^{(0)}$ 更小的控制可能使几何残差 $g_i^{(G)}$ 更差（COV 几何更不稳定）；反之，几何更优的控制可能使终端势能未对齐。因此“更优”只能相对某个固定的终端代价 $D_T(\cdot,S^\dagger)$ 与权重 $\rho_G$、$Q_i$ 而言（minmax/Bellman 表述见 Sec.~\ref{sec:control}），而非无条件成立。
+\end{proposition}
+
+\begin{proposition}[全集--真子集的关键是继承还是重建同一 fiber]\label{prop:s1:inherit-rebuild}
+\textbf{第三类（经验）。}在 $D_2=S\subsetneq D_1$ 的两阶段对齐中，第二阶段的真正决策\emph{不是}“$D_2$ 是否继续训练”，而是\emph{是否继承第一阶段已在同一 caption fiber 上建立的人物/子点路径}：
+\begin{itemize}
+  \item \emph{继承}（$T_2$ 沿用第一阶段同一 fiber）：势能路径连续，残差 $U_S^*-B_1^S$ 通常更小，几何只需在全集先验 $\Rstr_S(G_1)$ 上修正，故\emph{低方差、低残差}；代价是\emph{保留全集投影偏差}（若 $\Rstr_S(G_1)$ 对 $S$ 有偏）。
+  \item \emph{重建}（$T_2$ 启用真子集自身几何 $\widehat G_S$ 定义新 fiber）：可能降低投影偏差、上限更高；代价是\emph{高方差}、对可达性 $\cH_i$ 与数据质量更敏感。
+\end{itemize}
+是否重建为正收益取决于“偏差下降”是否超过“方差上升 $+$ 可达性损失 $+$ 额外势能高度”，这是一组可测诊断条件（见 Sec.~\ref{sec:case}、Sec.~\ref{sec:strategies}、Sec.~\ref{sec:diagnostics}），而非无条件定理。
+\end{proposition}
+
+\begin{proposition}[非 LoRA 专属：任意真子集再对齐都有同一张力]\label{prop:s1:generality}
+\textbf{第三类（结构性）。}本理论不局限于角色/画风 LoRA。只要存在 $D_2\subsetneq D_1$、且在全集对齐后对子集再对齐，就出现 Proposition~\ref{prop:s1:inherit-rebuild} 所述的“继承低方差有偏几何 vs.\ 重建低偏高方差几何”的张力。差别仅在几何 $G_i$ 的实现形式：Flow Matching / 扩散使 COV 场（posterior score covariance）非常显式；LLM 对齐中 $G_i$ 由语义场、偏好场、reward manifold 或数据分布几何类比承担（见 Sec.~\ref{sec:llm}）。
+\end{proposition}
+
+\begin{remark}\label{rem:s1:thesis-summary}
+综上：本节既未承诺一份固定数据配方，也未给出无条件最优策略，而是确立了“策略空间被状态递推 \eqref{eq:s1:recursion} 支配”这一框架——后续所有定量结论都是在此框架内、对 $\cL_i$、$\gres_i$、$E_i$ 与终端代价的具体化，并按第一/第二/第三类逐一标注其严格程度。
+\end{remark}
+
+% ----- S2 (sec:data) -----
+\section{数据分布：全集、真子集与隐变量测度}\label{sec:data}
+
+本节把"全集 $D_1$ 与真子集 $D_2$ 的两阶段对齐"所依赖的数据分布结构形式化。约定全部沿用 Sec.~\ref{sec:prelim} 的全局对象：点 $z=(c,x,t)$、隐变量 $y$、发射核 $q(x|y)$、平滑核 $K_t$ 与基模型 $p_{0,t}(x|c)$。本节只刻画\emph{数据侧}的测度对象（隐变量测度 $\nu_i$、阶段数据密度 $q_{i,t}^D$、子集限制），而把由它们诱导的几何量（posterior responsibility、score、Hessian $H_Y$、posterior score covariance $\Sigma_i^D$、全局几何 $G_i$）留到 Sec.~\ref{sec:cov}。本节所有结论是\textbf{第一类（精确恒等式）}，唯一的第三类风险出现在 \S\ref{ss:s2:subset} 末尾的 remark。
+
+\subsection{隐变量结构}\label{ss:s2:latent}
+
+\begin{definition}[隐变量分解]\label{def:s2:latent}
+设隐变量取值于乘积空间 $\cY=\cY_A\times\cY_P\times\cY_W\times\cY_R$，记
+\begin{equation}\label{eq:s2:latent}
+y=(A,P,W,R),
+\end{equation}
+其中各分量的语义为：
+\begin{itemize}
+  \item $A$：artist / style source / domain（画师、风格来源、域）；
+  \item $P$：character / entity / subject（人物、实体、主体）；
+  \item $W$：clothing / controllable attribute（服装及可控属性）；
+  \item $R$：residual visual factors（残差视觉因子：pose、lighting、crop、background、composition 等）。
+\end{itemize}
+\end{definition}
+
+\begin{caveat}[$y$ 是数据混合的形式化，而非可观测变量]\label{cav:s2:notobserved}
+分解 \eqref{eq:s2:latent} 是对\textbf{异质数据如何混合}的形式化记号，并\emph{不}断言模型显式观测或显式恢复 $A,P,W,R$ 中任一分量。模型在训练时仅见到点 $z=(c,x,t)$：caption $c$ 与图像 latent $x$。隐变量 $y$ 只作为生成数据的潜在标注，用来把"同一 caption 下混入了哪些子群"写清楚。下文凡涉及 $y$ 的积分，均指对数据生成测度的积分，而非对模型可见量的积分。
+
+此外，符号 $R$ 在本文中\textbf{只}作为隐变量元组 $y=(A,P,W,R)$ 的第四分量标签出现，绝不充当独立标量；reward 一律记为 $R_i$（带阶段下标），restriction/global$\to$local 算子一律记为 $\Rstr_z,\Rstr_S$。三者互不混淆（见 Sec.~\ref{sec:prelim} 的符号约定）。
+\end{caveat}
+
+\begin{definition}[阶段隐变量测度与 caption fiber]\label{def:s2:nui}
+第 $i$ 阶段的数据由 $\cY$ 上的概率测度 $\nu_i(dy)$ 刻画。设可测的\emph{标签映射}（caption 标注）
+\begin{equation}\label{eq:s2:labelmap}
+T_i:\cY\to\cC,\qquad c=T_i(y),
+\end{equation}
+把隐变量映到文本条件 $c$。给定 $c$，定义 \emph{caption fiber} 上的条件测度为正则条件分布
+\begin{equation}\label{eq:s2:nuicond}
+\nu_i(dy\mid c)\;:=\;\nu_i\bigl(dy \mid T_i(y)=c\bigr),
+\end{equation}
+即 $\nu_i$ 在事件 $\{y:T_i(y)=c\}$ 上的条件化（对 $(T_i)_\#\nu_i$ 几乎处处的 $c$ 良定义）。$\nu_i(dy\mid c)$ 是支撑在 fiber $T_i^{-1}(c)$ 上的概率测度，它描述"贴同一标签 $c$ 的所有隐变量子场的相对权重"。
+\end{definition}
+
+\begin{remark}\label{rem:s2:fiberidea}
+\eqref{eq:s2:nuicond} 把"一个 caption 背后是一锅混合的子群"显式化：同一 $c$ 通常对应 $A,P,W,R$ 的多种取值组合，$\nu_i(\cdot\mid c)$ 给出它们在该 fiber 内的混合比例。这一 fiber 视角是后文"继承同一 fiber 还是用子集重建 fiber"决策（见 Sec.~\ref{sec:fiber}）的测度论起点。
+\end{remark}
+
+\subsection{无标签纯图像分布：$N$ 阶联合测度}\label{ss:s2:unlabeledN}
+
+上面的 $T_i:y\mapsto c$ 只描述\emph{打标以后}如何形成 caption fiber。若暂时完全不考虑标签，只问"这一阶段的纯图片数据分布是什么"，则答案更基础：它是隐变量联合测度经发射核 $q_t$ 推前后的边缘混合。为避免把画师、人物、衣服误写成彼此独立，本节先给出一般 $N$ 阶形式。
+
+\begin{definition}[$N$ 阶纯图像数据测度]\label{def:s2:unlabeledN}
+设第 $i$ 阶段选取 $N$ 个异质因子
+\[
+Y^{(N)}=(Y_1,\ldots,Y_N)\in\cY^{(N)}:=\prod_{k=1}^{N}\cY_k,
+\]
+并以一个\textbf{联合}概率测度刻画数据组成：
+\begin{equation}\label{eq:s2:nuN}
+\nu_i^{(N)}(dy_{1:N}).
+\end{equation}
+这里 $\nu_i^{(N)}$ 一般\textbf{不是}边缘测度的乘积；只有在显式假设各因子独立时，才可写成 $\bigotimes_{k=1}^{N}\nu_{i,k}$。给定平滑发射核 $q_t(x\mid y_{1:N})$，无标签纯图像数据密度定义为
+\begin{equation}\label{eq:s2:qDN}
+q_{i,t}^{D,N}(x)
+\;=\;
+\int_{\cY^{(N)}} q_t(x\mid y_{1:N})\,\nu_i^{(N)}(dy_{1:N}).
+\end{equation}
+\end{definition}
+
+\noindent \eqref{eq:s2:qDN} 是本文数据侧最底层的形式：所有"单画师/多画师、单人物/多人物、单衣服/多衣服"都只是联合测度 $\nu_i^{(N)}$ 在不同坐标或条件坐标上的支撑大小不同。例如 $\supp(\nu_i^A)$ 为单点表示单画师；$\supp(\nu_i^P)$ 含多个点表示多人物；而"每个人物一套衣服"不是 $\nu_i^W$ 单点，而是条件支撑 $\supp\nu_i(dw\mid p)$ 对每个 $p$ 近似单点。
+
+\begin{remark}[有限样本矩阵形式]\label{rem:s2:finiteN}
+若每个因子是离散索引，\eqref{eq:s2:qDN} 可写成多维训练矩阵的加权和：
+\begin{equation}\label{eq:s2:qDNfinite}
+q_{i,t}^{D,N}(x)
+=
+\sum_{j_1,\ldots,j_N}
+\omega_i(j_1,\ldots,j_N)\,
+q_t(x\mid j_1,\ldots,j_N),
+\qquad
+\sum_{j_1,\ldots,j_N}\omega_i(j_1,\ldots,j_N)=1.
+\end{equation}
+权重 $\omega_i(j_1,\ldots,j_N)$ 才是数据矩阵的真实结构；把它拆成 $\prod_k\omega_{i,k}(j_k)$ 等价于额外假设各维独立，通常会抹掉人物--衣服、画师--人物等绑定关系。
+\end{remark}
+
+\begin{definition}[三阶 $A,P,W$ 纯图像分布]\label{def:s2:APW}
+在画师案例中，最小需要显式保留的三个联合变量是画师 $A$、人物 $P$ 与衣服/可控属性 $W$。残差视觉因子 $R$ 可先并入条件发射核：
+\begin{equation}\label{eq:s2:qAPWemission}
+\bar q_{i,t}(x\mid a,p,w)
+:=
+\int_{\cY_R}q_t(x\mid a,p,w,r)\,\nu_i(dr\mid a,p,w).
+\end{equation}
+令 $\nu_i^{APW}:=(\pi_{APW})_\#\nu_i$ 为 $\nu_i$ 在 $(A,P,W)$ 上的边缘联合测度，则无标签三阶纯图像分布为
+\begin{equation}\label{eq:s2:qAPW}
+q_{i,t}^{D,APW}(x)
+=
+\int_{\cY_A\times\cY_P\times\cY_W}
+\bar q_{i,t}(x\mid a,p,w)\,
+\nu_i^{APW}(da,dp,dw).
+\end{equation}
+\end{definition}
+
+\begin{remark}[标签化是后续的条件化，而非数据分布本身]\label{rem:s2:unlabeled-vs-caption}
+\eqref{eq:s2:qAPW} 不含 $c$，因此它回答的是"纯图片数据分布是什么"。若之后引入标签映射 $T_i(A,P,W,R)=c$，则 caption 条件分布 $q_{i,t}^D(x\mid c)$ 是在同一联合测度上再做一次 fiber 条件化，得到 \eqref{eq:s2:qDt}。因此打标策略会改变\emph{可见条件结构}，但不会改变底层多维图片测度的基本形式。
+\end{remark}
+
+\subsection{阶段数据分布}\label{ss:s2:stagedensity}
+
+阶段数据密度是\textbf{同一 caption fiber 下、所有隐变量子场的混合}：固定 $c$ 后，对 fiber 内的全部 $y$ 按权重 $\nu_i(\cdot\mid c)$ 把各子场的发射密度 $q(x|y)$ 叠加。
+
+\begin{definition}[阶段数据密度]\label{def:s2:qD}
+第 $i$ 阶段在 caption fiber $c$ 上的（未平滑）数据密度为
+\begin{equation}\label{eq:s2:qD}
+q_i^D(x\mid c)\;=\;\int_{\cY} q(x\mid y)\,\nu_i(dy\mid c).
+\end{equation}
+若引入平滑核 $K_t$ 或前向 SDE，令 $q_t(x\mid y)=\int K_t(x\mid x_1)\,q(dx_1\mid y)$ 为时间 $t$ 上的平滑发射密度，则\emph{平滑阶段数据密度}为
+\begin{equation}\label{eq:s2:qDt}
+q_{i,t}^D(x\mid c)\;=\;\int_{\cY} q_t(x\mid y)\,\nu_i(dy\mid c).
+\end{equation}
+\end{definition}
+
+\eqref{eq:s2:qD}--\eqref{eq:s2:qDt} 是定义式，属第一类，不含任何近似。注意混合只发生在\textbf{固定 fiber 内部}：条件测度 $\nu_i(\cdot\mid c)$ 把权重限制在 $T_i^{-1}(c)$ 上，因此 $q_{i,t}^D(\cdot\mid c)$ 是该 caption 下"所有子场（不同 $A,P,W,R$ 组合）"在同一标签内的混合，而非跨 caption 的混合。
+
+\begin{remark}\label{rem:s2:postsetup}
+密度 $q_{i,t}^D$ 是 Sec.~\ref{sec:cov} 中 posterior responsibility $\alpha_i(y\mid x,c,t)=q_t(x\mid y)\,\nu_i(dy\mid c)/\!\int q_t(x\mid y')\,\nu_i(dy'\mid c)$ 的分母，亦即 $\alpha_i$ 是 \eqref{eq:s2:qDt} 被积测度关于其积分的 Radon--Nikodym 权重。本节只需 $q_{i,t}^D$ 的良定义；其 score $s_i^D=\E_{\alpha_i}[s_Y]$ 与 posterior score covariance $\Sigma_i^D=\Cov_{\alpha_i}(s_Y)$ 的分解在 Sec.~\ref{sec:cov} 给出。
+\end{remark}
+
+\subsection{全集与真子集}\label{ss:s2:subset}
+
+两阶段对齐的关键设定是：$D_2$ 是 $D_1$ 的\textbf{真子集}，而非两个不相交目标，也非第二阶段引入新图片。下面把"子集"在测度层面精确化——原稿仅写 $\nu_2(dy)=\nu_1(dy\mid y\in S)$，此处补全其作为条件测度（即归一化的限制测度）的显式定义。
+
+\begin{definition}[真子集与限制测度]\label{def:s2:subset}
+设可测集 $S\subseteq\cY$ 满足 $0<\nu_1(S)<1$，且
+\begin{equation}\label{eq:s2:subsetset}
+D_2=S\subsetneq D_1,
+\end{equation}
+此处 $D_1$ 标识全集隐变量的支撑、$D_2=S$ 标识真子集（$\subsetneq$ 取严格包含，故 $\nu_1(S)<1$）。第二阶段隐变量测度定义为 $\nu_1$ 在 $S$ 上的\emph{归一化限制}（等价地，条件测度）：
+\begin{equation}\label{eq:s2:nu2}
+\nu_2(dy)\;=\;\nu_1\bigl(dy\mid y\in S\bigr)\;=\;\frac{\mathbf{1}_S(y)\,\nu_1(dy)}{\nu_1(S)}.
+\end{equation}
+\end{definition}
+
+\eqref{eq:s2:nu2} 是第一类恒等式：右端 $\mathbf{1}_S\,\nu_1/\nu_1(S)$ 显式给出 Radon--Nikodym 密度 $d\nu_2/d\nu_1=\mathbf{1}_S/\nu_1(S)$，因 $\nu_1(S)>0$ 而良定义，并自动归一（$\nu_2(\cY)=\nu_1(S)/\nu_1(S)=1$）。它澄清了原稿条件记号的两点含糊：其一，条件化是对\emph{隐变量事件} $\{y\in S\}$ 而非对 caption；其二，权重在 $S$ 内按 $\nu_1$ 的相对比例保留、在 $S$ 外置零，故 $D_2$ 继承的是 $D_1$ 在子集上的\textbf{原始相对结构}（仅整体重标度 $1/\nu_1(S)$），而不是把子集重新均匀化。
+
+\begin{remark}[caption-fiber 上的相容性]\label{rem:s2:fibercompat}
+由 \eqref{eq:s2:nu2}，对任一 caption $c$，第二阶段的 fiber 条件测度 $\nu_2(dy\mid c)$ 即把 \eqref{eq:s2:nuicond} 中的 $\nu_1$ 换成 $\nu_2$；当 fiber $T_2^{-1}(c)$ 与 $S$ 的交非空时，$\nu_2(\cdot\mid c)$ 等于 $\nu_1(\cdot\mid c)$ 在 $S\cap T_2^{-1}(c)$ 上的归一化限制。于是 $q_{2,t}^D(\cdot\mid c)$ 仍由 \eqref{eq:s2:qDt} 给出，只是混合权重收缩到 fiber 内落入 $S$ 的那部分子场。
+\end{remark}
+
+\paragraph{SKADI 实例。} 把上述抽象落到画师案例。设单一原画师 $a_0$，其全集为该画师名下的多人物画风数据：
+\begin{equation}\label{eq:s2:D1skadi}
+D_1=\bigl\{(a_0,p,w,r):p\in P_{\mathrm{set}},\ \mathrm{SKADI}\in P_{\mathrm{set}}\bigr\},
+\end{equation}
+即 $A$ 固定为 $a_0$、$P$ 遍历人物集 $P_{\mathrm{set}}$（其中含目标人物 $\mathrm{SKADI}$）、$W,R$ 自由。真子集取为其中 $\mathrm{SKADI}$ 的图片：
+\begin{equation}\label{eq:s2:D2skadi}
+D_2=\bigl\{(a_0,\mathrm{SKADI},w,r)\bigr\}\;\subsetneq\;D_1,
+\end{equation}
+对应 \eqref{eq:s2:subsetset} 中 $S=\{y:A=a_0,\,P=\mathrm{SKADI}\}$。由于 $P_{\mathrm{set}}$ 含 $\mathrm{SKADI}$ 之外的人物，$\nu_1(S)<1$，严格包含成立，故 \eqref{eq:s2:nu2} 的归一化条件 $0<\nu_1(S)<1$ 满足。
+
+\begin{remark}[窄 $W$-支撑的风险层级]\label{rem:s2:narrowW}
+若 $\mathrm{SKADI}$ 仅有单一套装，则 $D_2$ 的 $W$-支撑很窄：$\nu_2$ 在 $\cY_W$ 上几乎集中于单点。需强调，这\textbf{不}改变集合层面的真子集关系——\eqref{eq:s2:D2skadi} 与 \eqref{eq:s2:nu2} 仍精确成立（第一类）。窄 $W$-支撑带来的是\emph{统计与下游}风险，属\textbf{第三类（经验假设 / 可测诊断）}：
+\begin{itemize}
+  \item \emph{子集 COV 估计方差上升}：在 $S$ 上估计 posterior score covariance（即 Sec.~\ref{sec:cov} 的 $\Sigma_2^D$ 及其全局几何 $G_2$）时，$W$ 方向几乎无变化样本，使该方向的协方差估计方差增大、条件数变差；
+  \item \emph{低频绑定风险}：低频出现的 $W,R$ 因子可能被错误绑定到 $P=\mathrm{SKADI}$ 上（把"单一套装"误并入人物身份）。
+\end{itemize}
+此两项是\textbf{可测诊断量}（如子集协方差的有效样本数、$W$-方向特征值与条件数、跨套装泛化误差），需在第二阶段以经验方式监测；它们影响的是"继承同一 fiber 还是重建 fiber"的方差/可达性权衡（见 Sec.~\ref{sec:fiber} 与 Sec.~\ref{sec:biasvar}），而非 $D_2\subsetneq D_1$ 这一结构事实本身。
+\end{remark}
+
+% ----- S3 (sec:cov) -----
+\section{从经验测度到全局 COV 几何}\label{sec:cov}
+
+本节从有限样本出发，逐层建立训练目标景观（target landscape）的二阶几何，并把"局部曲率"与一个跨样本共享的"全局 COV 几何状态 $G_i$"显式联系起来。沿用 Sec.~\ref{sec:prelim} 与 Sec.~\ref{sec:data} 的记号：点 $z=(c,x,t)$，潜变量 $y=(A,P,W,R)$，阶段 $i$ 的潜测度 $\nu_i(dy)$、标签映射 $T_i:y\mapsto c$、条件潜测度 $\nu_i(dy\mid c)=\nu_i(dy\mid T_i(y)=c)$，发射核 $q(x\mid y)$ 与平滑核 $K_t$。本节的逻辑链是：经验测度 $\to$ 平滑后的条件密度 $\to$ posterior responsibility $\to$ 混合密度的 score/Hessian 精确分解 $\to$ 把分解结果中跨样本的二阶项凝结为全局状态 $G_i$，再用受限算子 $\Rstr_z$ 还原为局部二阶型。
+
+\subsection{经验测度与平滑条件密度}\label{subsec:s3:emp}
+
+数据以有限样本给出。设全集潜测度 $\nu_i$ 由 $N$ 个图像 latent 样本经发射与标注实现，记原始（未平滑）图像 latent 的经验测度为
+\begin{equation}\label{eq:s3:emp-measure}
+\widehat{Q}(dx_1)=\frac{1}{N}\sum_{m=1}^{N}\delta_{x^{(m)}}(dx_1),
+\end{equation}
+其中 $x^{(m)}$ 为第 $m$ 个样本的干净 latent。平滑时间 $t$ 下的平滑核 $K_t(x\mid x_1)$（如扩散/flow 的前向高斯核）把每个原子展开为一个光滑成分，得到平滑后的边缘密度
+\begin{equation}\label{eq:s3:smooth-marg}
+q_t(x)=\int K_t(x\mid x_1)\,\widehat{Q}(dx_1)=\frac{1}{N}\sum_{m=1}^{N}K_t\!\big(x\mid x^{(m)}\big).
+\end{equation}
+按潜变量 $y$ 分层：设取值 $y$（更一般地，落入 $y$ 所标记的 fiber）的样本有 $N_y$ 个，记为 $\{x_y^{(m)}\}_{m=1}^{N_y}$，则\emph{每个 latent 的}平滑条件密度为
+\begin{equation}\label{eq:s3:per-latent}
+q_t(x\mid y)=\frac{1}{N_y}\sum_{m=1}^{N_y}K_t\!\big(x\mid x_y^{(m)}\big).
+\end{equation}
+据此，阶段 $i$ 的条件数据密度（见 Sec.~\ref{sec:data} 的定义）为
+\begin{equation}\label{eq:s3:data-density}
+q_{i,t}^{D}(x\mid c)=\int q_t(x\mid y)\,\nu_i(dy\mid c).
+\end{equation}
+
+\begin{definition}[平滑条件密度，第一类：定义]\label{def:s3:smoothed}
+以 \eqref{eq:s3:per-latent}--\eqref{eq:s3:data-density} 定义的 $q_t(x\mid y)$ 与 $q_{i,t}^{D}(x\mid c)$ 称为阶段 $i$ 在平滑尺度 $t$ 下的\emph{条件数据密度}。这是后续一切 score/Hessian 计算的对象；它本身只是经验测度经核平滑得到的定义性构造，不含任何近似。
+\end{definition}
+
+\begin{remark}\label{rem:s3:regularize}
+经验测度 \eqref{eq:s3:emp-measure} 是奇异的（原子和），其 $\log$ 的导数无定义；平滑核 $K_t$ 起到正则化作用，使 $q_{i,t}^{D}(\cdot\mid c)$ 成为光滑正密度，从而 $\nabla_x\log q_{i,t}^{D}$、$\nabla_x^2\log q_{i,t}^{D}$ 处处良定。这正是把"有限样本"过渡到"可微景观"的桥。下文所有恒等式均在使 $q_{i,t}^{D}(x\mid c)>0$ 的点 $z$ 处成立。
+\end{remark}
+
+\subsection{无标签 $N$ 阶 posterior 与 COV 场}\label{subsec:s3:unlabeledNcov}
+
+若沿用 Sec.~\ref{ss:s2:unlabeledN} 的无标签纯图像分布，则点中不再包含 caption，局部点可写为 $z_0=(x,t)$。此时 posterior responsibility 不是对 caption fiber 的后验，而是对完整 $N$ 阶联合隐变量的后验：
+\begin{equation}\label{eq:s3:alphaN}
+\bar\alpha_i^{(N)}(dy_{1:N}\mid x,t)
+=
+\frac{q_t(x\mid y_{1:N})\,\nu_i^{(N)}(dy_{1:N})}
+{\displaystyle\int_{\cY^{(N)}}q_t(x\mid y'_{1:N})\,\nu_i^{(N)}(dy'_{1:N})}
+=
+\frac{q_t(x\mid y_{1:N})\,\nu_i^{(N)}(dy_{1:N})}{q_{i,t}^{D,N}(x)}.
+\end{equation}
+定义
+\begin{equation}\label{eq:s3:sHN}
+s_{Y^{(N)}}=\nabla_x\log q_t(x\mid Y_{1:N}),\qquad
+H_{Y^{(N)}}=\nabla_x^2\log q_t(x\mid Y_{1:N}).
+\end{equation}
+则无标签 $N$ 阶 COV 场为
+\begin{equation}\label{eq:s3:SigmaN}
+\Sigma_{i}^{D,N}(x,t)
+:=
+\Cov_{\bar\alpha_i^{(N)}}\!\big(s_{Y^{(N)}}\big).
+\end{equation}
+
+\begin{proposition}[无标签 $N$ 阶 COV/Hessian 分解；第一类]\label{prop:s3:Ncov}
+在 $q_{i,t}^{D,N}(x)>0$ 且积分号下可两次求导的点 $(x,t)$，有精确恒等式
+\begin{align}
+\nabla_x\log q_{i,t}^{D,N}(x)
+&=
+\E_{\bar\alpha_i^{(N)}}[s_{Y^{(N)}}],\label{eq:s3:Nscore}\\
+\nabla_x^2\log q_{i,t}^{D,N}(x)
+&=
+\E_{\bar\alpha_i^{(N)}}[H_{Y^{(N)}}]
++
+\Sigma_i^{D,N}(x,t).\label{eq:s3:Nhess}
+\end{align}
+\end{proposition}
+
+\begin{proof}
+证明与 Proposition~\ref{prop:s3:decomp} 相同，只是把条件测度 $\nu_i(dy\mid c)$ 换成无标签联合测度 $\nu_i^{(N)}(dy_{1:N})$，把条件边缘 $q_{i,t}^{D}(x\mid c)$ 换成无标签边缘 $q_{i,t}^{D,N}(x)$。
+\end{proof}
+
+\begin{definition}[三阶 $A,P,W$ COV 场]\label{def:s3:APWcov}
+对 \eqref{eq:s2:qAPW} 的三阶纯图像分布，posterior responsibility 为
+\begin{equation}\label{eq:s3:alphaAPW}
+\alpha_i^{APW}(da,dp,dw\mid x,t)
+=
+\frac{\bar q_{i,t}(x\mid a,p,w)\,\nu_i^{APW}(da,dp,dw)}
+{q_{i,t}^{D,APW}(x)}.
+\end{equation}
+记
+\begin{equation}\label{eq:s3:sHAPW}
+s_{a,p,w}:=\nabla_x\log \bar q_{i,t}(x\mid a,p,w),\qquad
+H_{a,p,w}:=\nabla_x^2\log \bar q_{i,t}(x\mid a,p,w).
+\end{equation}
+则三阶 COV 场为
+\begin{equation}\label{eq:s3:SigmaAPW}
+\Sigma_i^{APW}(x,t)
+:=
+\Cov_{\alpha_i^{APW}}\!\big(s_{A,P,W}\big),
+\end{equation}
+并满足
+\begin{equation}\label{eq:s3:hessAPW}
+\nabla_x^2\log q_{i,t}^{D,APW}(x)
+=
+\E_{\alpha_i^{APW}}[H_{A,P,W}]
++
+\Sigma_i^{APW}(x,t).
+\end{equation}
+\end{definition}
+
+\begin{remark}[三阶 COV 的可读展开]\label{rem:s3:APWexpand}
+按 $A\to P\to W$ 的嵌套条件链，令
+\[
+\mu_A:=\E_{\alpha_i^{APW}}[s_{A,P,W}\mid A],
+\qquad
+\mu_{A,P}:=\E_{\alpha_i^{APW}}[s_{A,P,W}\mid A,P].
+\]
+由全协方差公式，三阶 COV 可精确写成
+\begin{align}
+\Sigma_i^{APW}
+&=
+\Cov_{\alpha(A)}(\mu_A)
++
+\E_{\alpha(A)}\!\left[
+\Cov_{\alpha(P\mid A)}(\mu_{A,P})
+\right] \notag\\
+&\quad+
+\E_{\alpha(A,P)}\!\left[
+\Cov_{\alpha(W\mid A,P)}(s_{A,P,W})
+\right].
+\label{eq:s3:APWnested}
+\end{align}
+三项分别读作：画师/风格层面的后验 score 离散度、同一画师内人物层面的离散度、同一画师--人物条件下衣服/可控属性层面的离散度。换一个条件顺序也可得到等价但语义不同的精确分解；\eqref{eq:s3:APWnested} 只是最贴合画师--人物--衣服案例的一种读法。
+\end{remark}
+
+\begin{remark}[绑定项的对称 ANOVA 读法]\label{rem:s3:APWanova}
+若希望显式标出"人物--衣服绑定"或"画师--人物--衣服三阶交互"，可在 posterior Hilbert 空间 $L^2_0(\alpha_i^{APW};\R^d)$ 中对中心化 score 做正交 Hoeffding/ANOVA 分解：
+\begin{equation}\label{eq:s3:APWanova}
+s_{A,P,W}-\E[s_{A,P,W}]
+=h_A+h_P+h_W+h_{AP}+h_{AW}+h_{PW}+h_{APW}.
+\end{equation}
+若各分量按 posterior 内积正交，则
+\begin{equation}\label{eq:s3:APWanovaCov}
+\Sigma_i^{APW}
+=
+\sum_{\emptyset\ne I\subseteq\{A,P,W\}}
+\E_{\alpha_i^{APW}}\!\big[h_Ih_I^\top\big].
+\end{equation}
+其中 $h_{PW}$ 捕捉人物--衣服绑定，$h_{AW}$ 捕捉画师--衣服风格依赖，$h_{APW}$ 捕捉三阶交互。此分解不是额外训练假设，而是对同一个 COV 场的不同坐标展开；实际估计这些项是否稳定，则属于第三类诊断问题。
+\end{remark}
+
+\subsection{Posterior responsibility 是精确的 Radon--Nikodym 权重}\label{subsec:s3:resp}
+
+在点 $z=(c,x,t)$ 处，把 $\nu_i(dy\mid c)$ 视为先验、$q_t(x\mid y)$ 视为似然，则联合 $q_t(x\mid y)\,\nu_i(dy\mid c)$ 关于其边缘 $q_{i,t}^{D}(x\mid c)$ 的密度即 posterior responsibility：
+\begin{equation}\label{eq:s3:alpha}
+\alpha_i(y\mid x,c,t)=\frac{q_t(x\mid y)\,\nu_i(dy\mid c)}{\displaystyle\int q_t(x\mid y')\,\nu_i(dy'\mid c)}
+=\frac{q_t(x\mid y)\,\nu_i(dy\mid c)}{q_{i,t}^{D}(x\mid c)}.
+\end{equation}
+
+\begin{remark}[第一类：恒等式，非超参数]\label{rem:s3:alpha-exact}
+$\alpha_i(\cdot\mid x,c,t)$ 是 $y$ 上的一个概率测度（其关于 $\nu_i(\cdot\mid c)$ 的 Radon--Nikodym 导数为 $q_t(x\mid y)/q_{i,t}^{D}(x\mid c)$，对 $\nu_i(\cdot\mid c)$ 积分得 $1$）。它由 $\nu_i,q_t$ 唯一决定，\emph{不是}可调超参数；原稿若将其当作权重旋钮处理是误导。下文以 $\E_{\alpha_i}[\,\cdot\,]$、$\Cov_{\alpha_i}(\,\cdot\,)$ 记关于该后验测度的期望与协方差。
+\end{remark}
+
+\subsection{Score 与 Hessian 的精确分解}\label{subsec:s3:hess}
+
+引入条件 score 与条件 Hessian（见 Sec.~\ref{sec:prelim}）：
+\begin{equation}\label{eq:s3:sy-Hy}
+s_Y=\nabla_x\log q_t(x\mid Y),\qquad H_Y=\nabla_x^2\log q_t(x\mid Y),
+\end{equation}
+并记数据 score 与 posterior score covariance
+\begin{equation}\label{eq:s3:sD-SigmaD}
+s_i^{D}=\E_{\alpha_i}\!\big[s_Y\big],\qquad
+\Sigma_i^{D}\;\equiv\;\Cov_{\alpha_i}(s_Y)=\E_{\alpha_i}\!\big[(s_Y-s_i^{D})(s_Y-s_i^{D})^\top\big].
+\end{equation}
+此处统一记号：$\Sigma_i^{D}$ 与 $\Cov_{\alpha_i}(s_Y)$ 指\emph{同一对象}，全文不再区分。注意这里出现的 $H_Y$ 是\emph{条件对数密度的 Hessian}（plain $H$），与可达/假设/LoRA 子空间 $\cH_i$（calligraphic）是不同对象，切勿混淆。
+
+\begin{proposition}[混合密度的 score/Hessian 分解；第一类：精确恒等式]\label{prop:s3:decomp}
+在使 $q_{i,t}^{D}(x\mid c)>0$ 的点 $z=(c,x,t)$ 处，设 $q_t(\cdot\mid y)$ 关于 $x$ 二阶可微且积分号下求导成立，则
+\begin{align}
+\nabla_x\log q_{i,t}^{D}(x\mid c)&=\E_{\alpha_i}\!\big[s_Y\big]=s_i^{D},\label{eq:s3:score-id}\\[2pt]
+\nabla_x^2\log q_{i,t}^{D}(x\mid c)&=\E_{\alpha_i}\!\big[H_Y\big]+\Sigma_i^{D},
+\qquad \Sigma_i^{D}=\Cov_{\alpha_i}(s_Y).\label{eq:s3:hess-id}
+\end{align}
+\end{proposition}
+
+\begin{proof}
+记 $m(x)=q_{i,t}^{D}(x\mid c)=\int q_t(x\mid y)\,\nu_i(dy\mid c)$。一阶：
+\[
+\nabla_x\log m=\frac{\nabla_x m}{m}
+=\frac{\int \nabla_x q_t(x\mid y)\,\nu_i(dy\mid c)}{m}
+=\int \frac{q_t(x\mid y)}{m}\,\nabla_x\log q_t(x\mid y)\,\nu_i(dy\mid c)
+=\E_{\alpha_i}[s_Y],
+\]
+其中用了 $\nabla_x q_t=q_t\,\nabla_x\log q_t$ 与 \eqref{eq:s3:alpha}，得 \eqref{eq:s3:score-id}。二阶：对 $\nabla_x\log m=\E_{\alpha_i}[s_Y]$ 再求一次 $\nabla_x$。由 $\nabla_x^2\log m=\frac{\nabla_x^2 m}{m}-\frac{(\nabla_x m)(\nabla_x m)^\top}{m^2}$，逐项展开
+\[
+\frac{\nabla_x^2 m}{m}=\E_{\alpha_i}\!\big[H_Y+s_Y s_Y^\top\big],\qquad
+\frac{(\nabla_x m)(\nabla_x m)^\top}{m^2}=s_i^{D}(s_i^{D})^\top,
+\]
+（第一式用 $\nabla_x^2 q_t=q_t(H_Y+s_Ys_Y^\top)$）。两式相减：
+\[
+\nabla_x^2\log m=\E_{\alpha_i}[H_Y]+\E_{\alpha_i}[s_Ys_Y^\top]-s_i^{D}(s_i^{D})^\top
+=\E_{\alpha_i}[H_Y]+\Cov_{\alpha_i}(s_Y),
+\]
+即 \eqref{eq:s3:hess-id}。
+\end{proof}
+
+\begin{remark}[读解]\label{rem:s3:read}
+\eqref{eq:s3:hess-id} 是标准的"对数混合密度的 Hessian 恒等式"：穿过混合两次求导后，协方差项 $\Sigma_i^{D}=\Cov_{\alpha_i}(s_Y)$ 是 Fisher 型修正——它度量后验 $\alpha_i$ 在 score 方向上的异质性。结论是\emph{逐字面的}：数据异质性（同一 $c$ 下不同 latent $y$ 的 score 离散程度）以正半定项的形式直接进入目标景观的曲率 $\nabla_x^2\log q_{i,t}^{D}$，而不仅是描述性说法。$\E_{\alpha_i}[H_Y]$ 为各成分自身曲率的后验平均，$\Sigma_i^{D}$ 为成分间的散布；两者相加构成完整的局部二阶型。
+\end{remark}
+
+\subsection{全局 COV 几何状态与局部还原算子}\label{subsec:s3:global-local}
+
+\eqref{eq:s3:hess-id} 给出的是\emph{逐点}二阶型，依赖具体 $z$。但训练所学到、并可跨阶段继承的，是一个不随单点变化、对整个数据场成立的\emph{全局几何对象}：posterior cumulant / COV 几何。记之为全局几何状态 $G_i\in\cG$（$\COV$ 始终指 posterior score covariance / 数据场协方差几何，绝非卷积）。$G_i$ 可理解为把 \eqref{eq:s3:hess-id} 的二阶信息在 $z$ 上聚合（按平滑核与数据分布加权）后得到的、参数化的全局协方差几何；其精确实现（例如二阶 cumulant 张量场或其低维参数）在 Sec.~\ref{sec:state} 中给定。本节只需 $G_i$ 满足下述"可还原到局部"的接口。
+
+原稿在此处用未定义的"$\approx$"与未命名算子把全局量直接当作局部量，构成逻辑跳步。下面显式定义还原算子，并把近似关系的层级与所需假设讲清。
+
+\begin{definition}[局部还原算子 $\Rstr_z$；第一类：定义]\label{def:s3:Rz}
+设 $\Sym(\R^d)$ 为 $d\times d$ 实对称矩阵空间。对每个点 $z=(c,x,t)$，定义\emph{受限/求值算子}
+\begin{equation}\label{eq:s3:Rz}
+\Rstr_z:\cG\longrightarrow \Sym(\R^d),\qquad G\longmapsto \Rstr_z(G),
+\end{equation}
+为有界线性算子，把全局几何状态 $G$ 在点 $z$ 处求值，输出该点应有的局部二阶（对称）型。$\Rstr_z$ 由平滑尺度与局部坐标卡（local chart）决定，是 Sec.~\ref{sec:state} 中 $\Rstr$ 族的逐点特例；当还原到一个子集 fiber 时记为 $\Rstr_S$。它是 \emph{读出} 算子，不改变 $G$ 本身。
+\end{definition}
+
+\begin{assumption}[全局几何在核尺度上缓变；局部光滑性]\label{ass:s3:slow}
+存在邻域尺度 $\ell_t$（与平滑核 $K_t$ 的带宽同阶）使得：在以 $z$ 为中心、半径 $\ell_t$ 的局部坐标卡内，真实逐点二阶型 $\nabla_x^2\log q_{i,t}^{D}$ 关于 $z$ 的变化量为 $o(1)$（相对其自身范数），即全局几何 $G_i$ 在核尺度上缓变、且局部卡光滑。等价地，$\Rstr_z(G_i)$ 在该尺度内可代表整个邻域的二阶行为。
+\end{assumption}
+
+\begin{caveat}[全局$\to$局部的二阶近似；第二类：局部二阶近似]\label{cav:s3:loc}
+在 Assumption~\ref{ass:s3:slow} 下，逐点二阶型可由全局状态经 $\Rstr_z$ 还原：
+\begin{equation}\label{eq:s3:loc-approx}
+\boxed{\;\Sigma_i^{\mathrm{loc}}(z)\;=\;\nabla_x^2\log q_{i,t}^{D}(x\mid c)\;=\;\Rstr_z(G_i)\;+\;o(1)\;}
+\qquad(\ell_t\to 0).
+\end{equation}
+此式为\textbf{第二类}（局部二阶近似）：等号成立依赖 Assumption~\ref{ass:s3:slow} 的核尺度缓变与局部卡光滑；$o(1)$ 表示当平滑/邻域尺度 $\ell_t\to 0$ 时相对误差趋于零。原稿中无定义的"$\approx$"在此被替换为带显式假设与误差阶的 \eqref{eq:s3:loc-approx}。其中 $\Sigma_i^{\mathrm{loc}}(z)$ 即 $\Rstr_z$ 作用于 $G_i$ 给出的局部二阶型，与 \eqref{eq:s3:hess-id} 的逐点恒等式相容：$\Rstr_z(G_i)$ 是对 $\E_{\alpha_i}[H_Y]+\Sigma_i^{D}$ 的全局参数化读出。
+\end{caveat}
+
+\begin{remark}[楼塔问题：地基与倾斜]\label{rem:s3:tower}
+\eqref{eq:s3:loc-approx} 给出一个直观读解（"楼塔/地基"）。$G_i$ 是地基：改进全局 COV 估计（用更多、更具代表性的数据把 $G_i$ 估得更准）会整体抬高局部二阶型的"基线"，使每个 $\Rstr_z(G_i)$ 都更可靠——地基升高，楼塔随之升高。但当第二阶段把估计限制到真子集 fiber（用 $\Rstr_S$ 还原、并以 $\nu_2(dy)=\mathbf 1_S\,\nu_1/\nu_1(S)$ 重估几何，见 Sec.~\ref{sec:data}）时，子集采样可能使 $G$ 的估计带有系统偏差：还原出的局部型 $\Rstr_S(G)$ 可以\emph{数值上更高}（子集内方差更集中、对齐更强），却在方向上\emph{倾斜}（相对全集真实几何存在 bias）——即"高，但歪"。这正是 Sec.~\ref{sec:biasvar} 中 bias--variance 权衡与 Sec.~\ref{sec:fiber} 中"继承同一 fiber 还是用子集重建 fiber"决策的几何根源：抬高地基与避免地基倾斜不可兼得，需由可测诊断量（见 Sec.~\ref{sec:diagnostics}）裁决。
+\end{remark}
+
+\begin{remark}[与状态递推的衔接]\label{rem:s3:link}
+本节确立：局部曲率不是孤立逐点量，而是单一全局状态 $G_i$ 经 $\Rstr_z$ 的读出（\eqref{eq:s3:loc-approx}）。因此把 $G_i$ 纳入复合状态 $S_i=(B_i,G_i)\in\cS=\cB\times\cG$ 是自洽的：势能分量 $B_i$ 刻画一阶/对数比景观（见 Sec.~\ref{sec:potential}），几何分量 $G_i$ 刻画二阶 COV 景观；二者的残差 $\gres_i=(g_i^{(0)},\sqrt{\rho_G}\,g_i^{(G)})$ 中，$g_i^{(G)}=G_i^*-G_{i-1}$ 即全局 COV 残差，驱动几何状态的更新（见 Sec.~\ref{sec:dualres}、Sec.~\ref{sec:control}）。
+\end{remark}
+
+% ----- S4 (sec:potential) -----
+\section{残差势能与 RLHF 形式}\label{sec:potential}
+
+本节把"第 $i$ 阶段的对齐目标"严格化为一个\emph{残差势能}：以当前模型为 reference，理想 reward 恰是目标势能与当前累计势能之差。我们先给出势能的两条定义（基于 Sec.~\ref{sec:prelim} 与 Sec.~\ref{sec:state} 的对象），再从 KL-RLHF 的 Gibbs 闭式解推出残差 reward 的精确命题，随后澄清步长与温度的标定约定，最后给出目标分布的几何平均 $+$ preference-tilt 建模形式，并经 fiberwise centering 得到势能残差 $g_i^{(0)}$。逐结论标注其层级。
+
+% ------------------------------------------------------------
+\subsection{累计势能与目标势能}
+% ------------------------------------------------------------
+
+回顾点 $z=(c,x,t)$，base 模型 $p_{0,t}(x|c)$、阶段-$i$ 模型 $p_{i,t}(x|c)$。
+
+\begin{definition}[累计势能与目标势能]\label{def:s4:potentials}
+设 $p_{i,t}(\cdot|c)\ll p_{0,t}(\cdot|c)$（$\rho$-a.e.\ $c$）。\textbf{累计势能}（相对 base 的全部 log-density 偏移）定义为
+\begin{equation}\label{eq:s4:Bdef}
+B_i(c,x,t):=\log\frac{p_{i,t}(x|c)}{p_{0,t}(x|c)},\qquad B_0\equiv 0 .
+\end{equation}
+若第 $i$ 阶段存在理想目标条件分布 $q_i^*(\cdot|c)\ll p_{0,t}(\cdot|c)$，其\textbf{目标势能}定义为
+\begin{equation}\label{eq:s4:Ustardef}
+U_i^*(c,x,t):=\log\frac{q_i^*(x|c)}{p_{0,t}(x|c)} .
+\end{equation}
+\end{definition}
+
+\begin{remark}[基点 gauge 的不变性]\label{rem:s4:gauge}
+$B_i$ 与 $U_i^*$ 均以 $p_{0,t}$ 为公共参考基点（gauge）。下文残差只出现差 $U_i^*-B_{i-1}=\log\bigl(q_i^*/p_{i-1,t}\bigr)$，其中 $p_{0,t}$ 项相消，故所有下游构造对基点选取不变。这是\textbf{第一类}的结构性事实。
+\end{remark}
+
+% ------------------------------------------------------------
+\subsection{Gibbs 闭式解与残差 reward}
+% ------------------------------------------------------------
+
+考虑以\emph{当前}模型 $p_{i-1,t}$ 为 reference 的 KL-regularized 对齐目标。固定 $(c,t)$，对条件分布 $P(\cdot|c)$ 求解
+\begin{equation}\label{eq:s4:klobj}
+P_i^*(\cdot|c)=\argmax_{P(\cdot|c)}\Bigl\{\,\E_{P(\cdot|c)}[R_i(c,X,t)]-\beta_i\,\KL\!\bigl(P(\cdot|c)\,\|\,p_{i-1,t}(\cdot|c)\bigr)\Bigr\},\qquad \beta_i>0 .
+\end{equation}
+
+\begin{lemma}[条件 Gibbs 闭式解]\label{lem:s4:gibbs}
+设 $\E_{p_{i-1,t}(\cdot|c)}[\exp(R_i/\beta_i)]<\infty$（$\rho$-a.e.\ $c$）。则 \eqref{eq:s4:klobj} 的唯一最优解为指数倾斜
+\begin{equation}\label{eq:s4:gibbs}
+\frac{q_i^*(x|c)}{p_{i-1,t}(x|c)}=\frac{\exp\!\bigl(R_i(c,x,t)/\beta_i\bigr)}{Z_i^{\mathrm{KL}}(c,t)},\qquad
+Z_i^{\mathrm{KL}}(c,t)=\E_{p_{i-1,t}(\cdot|c)}\!\bigl[\exp(R_i/\beta_i)\bigr],
+\end{equation}
+其中 $q_i^*=P_i^*$。
+\end{lemma}
+
+\begin{proof}
+固定 $(c,t)$。\eqref{eq:s4:klobj} 的目标关于 $P(\cdot|c)$ 严格凹（KL 严格凸，期望线性），在归一化约束 $\int P(dx|c)=1$ 下，引入 Lagrange 乘子 $\kappa(c)$ 并对 $P$ 取一阶变分：
+\[
+R_i(c,x,t)-\beta_i\Bigl[\log\tfrac{P(x|c)}{p_{i-1,t}(x|c)}+1\Bigr]-\kappa(c)=0 ,
+\]
+解得 $P(x|c)\propto p_{i-1,t}(x|c)\exp(R_i/\beta_i)$。由可积性假设归一化即得 \eqref{eq:s4:gibbs}，凹性保证唯一。
+\end{proof}
+
+对 \eqref{eq:s4:gibbs} 两边取对数并以 $p_{0,t}$ 改写基点（用 \eqref{eq:s4:Bdef}--\eqref{eq:s4:Ustardef}）：
+\begin{equation}\label{eq:s4:gibbslog}
+U_i^*(c,x,t)=B_{i-1}(c,x,t)+\frac{R_i(c,x,t)}{\beta_i}-\log Z_i^{\mathrm{KL}}(c,t).
+\end{equation}
+其中 $\log Z_i^{\mathrm{KL}}(c,t)$ 是只依赖 $(c,t)$ 的 fiberwise 归一化常数（见 \S\ref{subsec:s4:centering}，它将被 centering 吸收）。
+
+\begin{proposition}[理想残差 reward]\label{prop:s4:ideal}
+（\textbf{第一类}，精确恒等式。）在下列前提下：（i）阶段对齐取 \eqref{eq:s4:klobj} 的 KL-RLHF 形式且 reference 为\emph{当前}模型 $p_{i-1,t}$；（ii）Gibbs 闭式解 \eqref{eq:s4:gibbs} 成立（Lem.~\ref{lem:s4:gibbs} 的可积性）；（iii）存在绝对目标势能 $U_i^*$（Def.~\ref{def:s4:potentials}）。则使 \eqref{eq:s4:klobj} 的最优解恰为 $q_i^*$ 的理想 reward 满足
+\begin{equation}\label{eq:s4:ideal}
+\boxed{\;\frac{R_i^{\mathrm{ideal}}(c,x,t)}{\beta_i}=U_i^*(c,x,t)-B_{i-1}(c,x,t)\;}
+\end{equation}
+在 fiberwise 加常数 $\log Z_i^{\mathrm{KL}}(c,t)$ 的意义下成立（该常数不影响条件分布，见 Rem.~\ref{rem:s4:gauge} 与 \S\ref{subsec:s4:centering}）。
+\end{proposition}
+
+\begin{proof}
+由 \eqref{eq:s4:gibbslog} 直接解出 $R_i/\beta_i=U_i^*-B_{i-1}+\log Z_i^{\mathrm{KL}}(c,t)$。$\log Z_i^{\mathrm{KL}}$ 仅依赖 $(c,t)$，在每个 $c$-fiber 上是常数，对 $q_i^*(\cdot|c)$ 的归一化无影响，故略去后得 \eqref{eq:s4:ideal}。
+\end{proof}
+
+\begin{caveat}[这是命题而非无条件递推]\label{cav:s4:notrecursion}
+\eqref{eq:s4:ideal} 不是"reward 可任意叠加"的递推断言。它仅说：\emph{若}本阶段终点设为 $q_i^*$，\emph{则}等价理想 reward 必为残差势能 $U_i^*-B_{i-1}$。前提（iii）"存在绝对目标势能"是建模假设；前提（i）规定了 reference 是当前模型而非 base，这正是"多阶段对齐作用在残差势能上"的来源。有限模型族下，实际更新是该理想残差在可达子空间上的投影（见 Sec.~\ref{sec:control}），\eqref{eq:s4:ideal} 给出的是其\emph{无约束}理想终点。
+\end{caveat}
+
+\begin{remark}[步长 $\eta_i$ 与温度 $1/\beta_i$ 的标定]\label{rem:s4:etacalib}
+（\textbf{第一类}，bookkeeping identity，无近似。）残差的归一化约定直接决定理想一步更新的匹配系数 $\eta_i$，须与 Sec.~\ref{sec:control} 的递推 $S_{i+1}=S_i+\eta_i\cL_i\gres_i+E_i$ 一致。
+
+若把逐阶段残差定义为\emph{已除温度}的量
+\[
+g_i:=R_i/\beta_i=U_i^*-B_{i-1},
+\]
+则理想一步更新为 $B_i=B_{i-1}+g_i$，即 $\boxed{\eta_i=1}$：此时 $g_i$ 已自带 $1/\beta_i$ 归一化，匹配系数恒为 $1$。本文 $g_i^{(0)}$（下文 \eqref{eq:s4:g0}）正取此约定，故与之配套的步长为 $\eta_i=1$。
+
+系数 $\eta_i=1/\beta_i$ \emph{仅当}残差以未除温度的 reward $R_i$ 本身书写时才出现——此时更新须显式补回 $1/\beta_i$ 方能复原 $g_i$。两套约定在残差归一化固定后描述同一恒等式，差别纯属记账。
+\end{remark}
+
+% ------------------------------------------------------------
+\subsection{目标分布的几何平均与 preference-tilt 形式}
+% ------------------------------------------------------------
+
+理想 reward \eqref{eq:s4:ideal} 需要一个具体的目标分布 $q_i^*$。一个自然的选择是在\emph{阶段数据场}与\emph{base}之间作几何平均插值，并叠加一个 preference 倾斜。回顾阶段数据密度（Sec.~\ref{sec:data}）
+\[
+q_{i,t}^D(x|c)=\int q_t(x|y)\,\nu_i(dy|c).
+\]
+
+\begin{caveat}[几何平均 $+$ preference-tilt 是建模选择，非推导]\label{cav:s4:modeling}
+（\textbf{第三类} / 建模假设。）以下 $q_i^*$ 的具体形式 \emph{并非}从 Prop.~\ref{prop:s4:ideal} 导出。Prop.~\ref{prop:s4:ideal} 只断言"给定 $q_i^*$ 则理想 reward 为残差势能"，并未指定 $q_i^*$。下式是"数据 vs.\ base 插值 $+$ preference 重加权"的\emph{自然} Gibbs target：它使 $\gamma_i$ 控制向数据场倾斜的强度、$\Phi_i^\dagger$ 注入偏好曲率，且在 $\gamma_i\in\{0,1\}$、$\Phi_i^\dagger\equiv0$ 时分别退化为 base 与纯数据场。但其它目标（例如算术插值、$f$-散度投影目标、或带约束的 transport target）同样 admissible；选择此形式是一项可被替换的建模决定。
+\end{caveat}
+
+在此建模选择下，取目标分布为加权几何平均叠加 preference-tilt：
+\begin{equation}\label{eq:s4:qstar}
+q_i^*(x|c)=\frac{1}{Z_i(c,t)}\;q_{i,t}^D(x|c)^{\gamma_i}\;p_{0,t}(x|c)^{1-\gamma_i}\;\exp\!\bigl(\Phi_i^\dagger(c,x,t)\bigr),\qquad \gamma_i\in[0,1],
+\end{equation}
+其中 $\Phi_i^\dagger$ 为 preference 势能，$Z_i(c,t)=\int q_{i,t}^D(x|c)^{\gamma_i}p_{0,t}(x|c)^{1-\gamma_i}\exp(\Phi_i^\dagger)\,dx$ 是 fiberwise 配分函数（须 $<\infty$）。代入 \eqref{eq:s4:Ustardef} 并用 $\log p_{0,t}^{1-\gamma_i}-\log p_{0,t}=-\gamma_i\log p_{0,t}$：
+\begin{equation}\label{eq:s4:Ustar}
+\boxed{\;U_i^*(c,x,t)=\gamma_i\,\log\frac{q_{i,t}^D(x|c)}{p_{0,t}(x|c)}+\Phi_i^\dagger(c,x,t)-\log Z_i(c,t)\;}
+\end{equation}
+此为代入式 \eqref{eq:s4:qstar} 后的精确恒等式（\textbf{第一类}，在 Caveat~\ref{cav:s4:modeling} 选定的 $q_i^*$ 形式之下）。注意 $\log Z_i(c,t)$ 仅依赖 $(c,t)$。
+
+% ------------------------------------------------------------
+\subsection{fiberwise centering 与势能残差 $g_i^{(0)}$}
+\label{subsec:s4:centering}
+% ------------------------------------------------------------
+
+在条件（fiber）框架下，每个 $c$-fiber 上 $p_{i,t}(\cdot|c)$ 必须各自归一化，故只依赖 $c$（与 $t$）的常数（如 $\log Z_i^{\mathrm{KL}}$、$\log Z_i$）是 fiberwise gauge：它们被归一化吸收，对条件分布无效。为消除这一 gauge 自由度，引入 fiberwise centering 算子。
+
+\begin{definition}[fiberwise centering]\label{def:s4:center}
+对 $f:(c,x)\mapsto f(c,x)$，定义
+\begin{equation}\label{eq:s4:center}
+\Center_{i-1}[f](c,x):=f(c,x)-\E_{p_{i-1,t}(\cdot|c)}\!\bigl[f(c,X)\bigr],
+\end{equation}
+即在 reference 模型 $p_{i-1,t}$ 的每个 $c$-fiber 上减去条件均值。$\Center_{i-1}$ 是到 fiber 零均值子空间的逐 fiber 正交投影；任何只依赖 $(c,t)$ 的项落入其核。
+\end{definition}
+
+\begin{remark}[centering 自动吸收 fiberwise 归一化]\label{rem:s4:absorb}
+由 Def.~\ref{def:s4:center}，对任意只依赖 $(c,t)$ 的 $\kappa(c,t)$ 有 $\Center_{i-1}[f+\kappa]=\Center_{i-1}[f]$。故 \eqref{eq:s4:gibbslog} 中的 $\log Z_i^{\mathrm{KL}}$ 与 \eqref{eq:s4:Ustar} 中的 $\log Z_i$ 在 centering 后\emph{自动消失}，无需显式计算配分函数。这正是 Prop.~\ref{prop:s4:ideal} 与 \eqref{eq:s4:Ustar} 中可略去 fiber 常数的严格依据。
+\end{remark}
+
+据此，第 $i$ 阶段的\textbf{势能残差}定义为对理想残差 $U_i^*-B_{i-1}$ 作 fiberwise centering。代入 \eqref{eq:s4:Ustar}（其中 $\log Z_i$ 被 $\Center_{i-1}$ 吸收，Rem.~\ref{rem:s4:absorb}）：
+\begin{equation}\label{eq:s4:g0}
+\boxed{\;
+g_i^{(0)}=\Center_{i-1}\!\bigl[U_i^*-B_{i-1}\bigr]
+=\Center_{i-1}\!\Bigl[\gamma_i\,\log\tfrac{q_{i,t}^D}{p_{0,t}}+\Phi_i^\dagger-B_{i-1}\Bigr].
+\;}
+\end{equation}
+
+\begin{proposition}[$g_i^{(0)}$ 的良定与无 gauge 性]\label{prop:s4:g0}
+（\textbf{第一类}，结构性，在 \eqref{eq:s4:qstar} 的建模选择之下。）设 \eqref{eq:s4:g0} 中各 log 比值 $\rho$-a.e.\ $c$ 属于 $L^1(p_{i-1,t}(\cdot|c))$。则 $g_i^{(0)}$ 在每个 $c$-fiber 上满足 $\E_{p_{i-1,t}(\cdot|c)}[g_i^{(0)}(c,X)]=0$，故 $g_i^{(0)}$ 落在 reference 模型的 fiber 切空间内，且不含任何 fiberwise 归一化自由度；特别地 $g_i^{(0)}$ 与配分函数 $Z_i$、$Z_i^{\mathrm{KL}}$ 无关。
+\end{proposition}
+
+\begin{proof}
+$\Center_{i-1}[f]$ 的条件均值为 $\E_{p_{i-1,t}(\cdot|c)}[f-\E_{p_{i-1,t}(\cdot|c)}[f]]=0$，零均值性即得；切空间归属与 gauge 无关性由 Rem.~\ref{rem:s4:absorb} 立得。
+\end{proof}
+
+\begin{remark}[与双残差及全局 COV 的衔接]\label{rem:s4:bridge}
+\eqref{eq:s4:g0} 给出的 $g_i^{(0)}$ 只是复合残差 $\gres_i=(g_i^{(0)},\sqrt{\rho_G}\,g_i^{(G)})$ 的势能分量。它回答"目标分布相对当前模型还差多少"，却不刻画该目标场的几何是否稳定、可达、是否由正确的全局 COV 支撑——后者由全局 COV 残差 $g_i^{(G)}=G_i^*-G_{i-1}$ 承担。两者的堆叠、权重 $\rho_G$、以及局部二阶投影 $\Rstr_z[g_i^{(G)}]$ 的引入见 Sec.~\ref{sec:dualres} 与 Sec.~\ref{sec:cov}。势能残差 $g_i^{(0)}$ 经 ridge-regularized 线性响应算子 $\cL_i$（非投影）传入状态递推，见 Sec.~\ref{sec:control}。
+\end{remark}
+
+% ----- S5 (sec:dualres) -----
+\section{双残差：势能残差与全局 COV 残差}\label{sec:dualres}
+
+本节把第 $i$ 步训练所要驱动的"残差"从单一的势能残差扩展为\textbf{双残差}：势能残差 $g_i^{(0)}$ 与全局 COV 几何残差 $g_i^{(G)}$，并把二者堆叠为复合残差 $\gres_i$。势能残差刻画"目标分布相对当前模型还差多少"，但它不回答另一个问题：这个目标场的几何是否稳定、是否可达、是否由正确的全局 COV 支撑。下文先给出动机，再定义复合残差所在的 Hilbert 空间，最后给出局部二阶残差的显式分解并修正原稿中以"$\approx$"掩盖的跳步。
+
+\subsection{动机：单看势能残差不够}
+
+回顾 Sec.~\ref{sec:potential} 给出的中心化势能残差
+\begin{equation}\label{eq:s5:gpot}
+g_i^{(0)}=\Center_{i-1}\!\big[\,\gamma_i\log(q_{i,t}^D/p_{0,t})+\Phi_i^\dagger-B_{i-1}\,\big]
+=\Center_{i-1}\!\big[\,U_i^*-B_{i-1}\,\big],
+\end{equation}
+其中 $\Center_{i-1}[f](c,x)=f(c,x)-\E_{p_{i-1,t}(\cdot\mid c)}[f(c,X)]$ 为 fiberwise centering（只依赖 $c$ 的常数被归一化吸收）。式~\eqref{eq:s5:gpot} 给出"以当前模型 $p_{i-1,t}$ 为 reference 时，理想的 KL-RLHF reward 方向"，即目标势能 $U_i^*$ 减当前累计势能 $B_{i-1}$ 后在 fiber 上中心化。
+
+\begin{remark}[势能残差的盲区]\label{rem:s5:blind}
+$g_i^{(0)}$ 只携带一阶（势能落差）信息。它无法分辨两种情形：（i）目标势能确实需要大幅抬升、且其曲率几何与当前模型一致；（ii）势能落差很小、但目标场的二阶几何（score covariance / posterior cumulant）与当前模型严重不符。情形（ii）下，仅以 $g_i^{(0)}$ 为驱动会沿一个\emph{几何不被支撑}的方向更新，表现为可达性不足、训练晃动或低频绑定。故须额外引入刻画二阶几何落差的残差分量。
+\end{remark}
+
+\subsection{全局 COV 残差}
+
+按 Sec.~\ref{sec:cov} 的约定，$G_i\in\cG$ 表示第 $i$ 阶段模型的全局 COV / posterior-cumulant 几何状态（而非某个局部点的 Hessian）。第 $i$ 步控制 $u_i$ 通过阶段数据测度 $\nu_i$ 与标签映射 $T_i$ 诱导阶段数据密度 $q_{i,t}^D(x\mid c)=\int q_t(x\mid y)\,\nu_i(dy\mid c)$ 及 posterior responsibility $\alpha_i(y\mid x,c,t)$，进而诱导一个\emph{目标}全局几何。
+
+\begin{definition}[全局 COV 目标与 COV 残差]\label{def:s5:Gtarget}
+记由 $q_{i,t}^D$ 与 $\alpha_i$ 诱导的全局 posterior-cumulant 几何为
+\begin{equation}\label{eq:s5:Gstar}
+G_i^*(u_i)\in\cG
+\quad\text{(global posterior cumulant geometry induced by }q_{i,t}^D\text{ and }\alpha_i\text{)},
+\end{equation}
+其 fiberwise / 逐点限制经 $\Rstr_z$ 给出局部二阶形 $\Sigma_i^D(z)=\Cov_{\alpha_i}(s_Y)$（见 Sec.~\ref{sec:cov}）。定义\textbf{全局 COV 残差}
+\begin{equation}\label{eq:s5:gG}
+g_i^{(G)}=G_i^*(u_i)-G_{i-1}\ \in\ \cG.
+\end{equation}
+\end{definition}
+
+\begin{remark}\label{rem:s5:Glin}
+式~\eqref{eq:s5:gG} 的减法在几何状态空间 $\cG$ 上进行。当 $\cG$ 是矩阵值场或在固定参考点的切空间上取仿射结构时，$g_i^{(G)}$ 为良定义的 $\cG$ 中元素；否则应理解为在 $G_{i-1}$ 处的切向量 $g_i^{(G)}\in T_{G_{i-1}}\cG$。本文以下默认 $\cG$ 取此线性化结构，与状态递推中 $S_i=(B_i,G_i)$ 的加法更新相容。
+\end{remark}
+
+\subsection{复合残差 Hilbert 空间}
+
+把势能残差与 COV 残差堆叠，得到驱动状态递推的复合残差。
+
+\begin{definition}[复合残差与加权内积]\label{def:s5:composite}
+设势能残差所在的（中心化函数）切空间为 $\cT$，全局几何残差所在的空间为 $\cG$。给定几何权重 $\rho_G\ge 0$，定义\textbf{复合残差}
+\begin{equation}\label{eq:s5:gres}
+\gres_i=\big(g_i^{(0)},\ \sqrt{\rho_G}\,g_i^{(G)}\big)\ \in\ \cT\oplus\cG,
+\end{equation}
+并在 $\cT\oplus\cG$ 上赋予加权内积
+\begin{equation}\label{eq:s5:inner}
+\big\langle (a,A),(b,B)\big\rangle
+=\langle a,b\rangle_{M}+\rho_G\,\langle A,B\rangle_{\cG},
+\end{equation}
+其中 $\langle\cdot,\cdot\rangle_{M}$ 是由度量 $M$（即控制中的训练度量 $M_i$，见 Sec.~\ref{sec:control}）诱导的 $\cT$ 内积，$\langle\cdot,\cdot\rangle_{\cG}$ 是 $\cG$ 上的固定内积。相应范数记为 $\|\gres_i\|^2=\|g_i^{(0)}\|_M^2+\rho_G\,\|g_i^{(G)}\|_{\cG}^2$。
+\end{definition}
+
+\begin{remark}[内积中的 $\sqrt{\rho_G}$ 与 $\rho_G$ 一致]\label{rem:s5:weight}
+分量~\eqref{eq:s5:gres} 取 $\sqrt{\rho_G}\,g_i^{(G)}$，而内积~\eqref{eq:s5:inner} 的第二项权重为 $\rho_G$，二者一致：在标准（未加权）内积下计算 $\gres_i$ 自身范数，$\|(g_i^{(0)},\sqrt{\rho_G}\,g_i^{(G)})\|^2=\|g_i^{(0)}\|_M^2+\rho_G\|g_i^{(G)}\|_{\cG}^2$，恰为~\eqref{eq:s5:inner} 在对角线上的取值。$\rho_G=0$ 退化为纯势能残差驱动（忽略几何残差），$\rho_G\to\infty$ 退化为纯几何对齐。$\rho_G$ 由控制者选择，刻画"一阶势能落差"与"二阶几何落差"的相对重要性。
+\end{remark}
+
+\begin{caveat}[$\cT\oplus\cG$ 为 Hilbert 空间所需假设]\label{cav:s5:hilbert}
+$(\cT\oplus\cG,\langle\cdot,\cdot\rangle)$ 构成 Hilbert 空间，要求：（i）$M\succeq 0$ 且在所考虑的残差子空间上 $M\succ 0$，使 $\langle\cdot,\cdot\rangle_M$ 为内积（半正定情形须先商去 $M$ 的零空间）；（ii）$\rho_G\ge 0$ 且 $\langle\cdot,\cdot\rangle_{\cG}$ 正定；（iii）$\cT$、$\cG$ 关于各自范数完备。当 $\rho_G=0$ 时第二分量退化为半范数，此时 $\gres_i$ 取值于商空间 $\cT$。原稿未声明这些条件即直接使用堆叠内积，此处补全。
+\end{caveat}
+
+\subsection{局部二阶残差分解（修正 "$\approx$"）}
+
+原稿写"局部二阶项约等于全局 COV 残差的投影加局部 Hessian 平均项残差"，以一个未加限定的 "$\approx$" 掩盖了线性化与局部性假设。下面把它拆为两层：抽象的加性恒等式，以及把全局量限制到局部点的第二类近似。
+
+记 $\Delta_i[\cdot]$ 表示同一泛函在第 $i$ 步\emph{目标量}与第 $i-1$ 步\emph{当前量}处取值之差（即对应残差），例如 $\Delta_i\,\E_{\alpha}[H_Y](z)=\E_{\alpha_i}[H_Y](z)-\E_{\alpha_{i-1}}[H_Y](z)$，$\Delta_i\,\nabla_x^2\Phi^\dagger(z)=\nabla_x^2\Phi_i^\dagger(z)-\nabla_x^2\Phi_{i-1}^\dagger(z)$。
+
+\begin{proposition}[局部二阶残差分解]\label{prop:s5:loc2}
+在点 $z=(c,x,t)$ 处，把局部二阶残差 $g_i^{(2,\mathrm{loc})}(z)$ 定义为目标局部二阶形与当前局部二阶形之差。则它\emph{加性地}分裂为"posterior score covariance 残差"与"条件 Hessian 平均项与 preference curvature 的残差"之和：
+\begin{equation}\label{eq:s5:loc2split}
+g_i^{(2,\mathrm{loc})}(z)
+=\underbrace{\big(\Sigma_i^D(z)-\Sigma_{i-1}^D(z)\big)}_{\text{COV 残差}}
++\underbrace{\Big(\Delta_i\,\E_{\alpha}[H_Y](z)+\Delta_i\,\nabla_x^2\Phi^\dagger(z)\Big)}_{\text{$\E_\alpha[H_Y]$ 与 preference curvature 的残差}}.
+\end{equation}
+进一步，在 Assumption~\ref{ass:s5:loc} 的局部性与线性化下，首项的 COV 残差可由全局 COV 残差的限制表示：
+\begin{equation}\label{eq:s5:loc2}
+g_i^{(2,\mathrm{loc})}(z)
+=\Rstr_z\!\big[g_i^{(G)}\big]
++\Big(\Delta_i\,\E_{\alpha}[H_Y](z)+\Delta_i\,\nabla_x^2\Phi^\dagger(z)\Big)
++E_i^{(2)}(z),
+\end{equation}
+其中 $\Rstr_z:\cG\to\Sym$ 是把全局几何状态限制到 $z$ 处局部二阶形的（线性化）限制算子；$H_Y=\nabla_x^2\log q_t(x\mid y)$ 为条件 log-密度的 Hessian；$\E_\alpha[H_Y]$ 为对 posterior responsibility $\alpha_i$ 的平均；$\Phi_i^\dagger$ 为 preference potential；$E_i^{(2)}(z)$ 为高阶余项。\textbf{第二类}（局部二阶近似）：式~\eqref{eq:s5:loc2split} 是抽象加性\emph{恒等式}，而把 $\Sigma_i^D(z)-\Sigma_{i-1}^D(z)$ 替换为 $\Rstr_z[g_i^{(G)}]$ 依赖 Assumption~\ref{ass:s5:loc}；忽略 $E_i^{(2)}(z)$ 即得式~\eqref{eq:s5:loc2} 的局部二阶近似。
+\end{proposition}
+
+\begin{remark}[式~\eqref{eq:s5:loc2split} 的来源]\label{rem:s5:loc2deriv}
+局部二阶形（即 $\Sigma^{\mathrm{loc}}(z)$ 所对应的景观曲率）由两部分构成：posterior score covariance $\Sigma^D=\Cov_\alpha(s_Y)$ 与条件 Hessian 平均 $\E_\alpha[H_Y]$，再叠加 preference 项的曲率 $\nabla_x^2\Phi_i^\dagger$。其根据是 Sec.~\ref{sec:cov} 的 Hessian-of-log-mixture 分解（COV，非 convolution）
+\begin{equation}\label{eq:s5:hessmix}
+\nabla_x^2\log q_{i,t}^D(x\mid c)=\E_{\alpha_i}[H_Y]+\Sigma_i^D,\qquad \Sigma_i^D=\Cov_{\alpha_i}(s_Y).
+\end{equation}
+对其取第 $i$ 步与第 $i-1$ 步之差即得式~\eqref{eq:s5:loc2split}：$\Sigma^D$ 部分的差为首项，$\E_\alpha[H_Y]$ 与 preference 曲率之差合为尾项。$\Sigma^D$ 部分的全局对应物即 $g_i^{(G)}$，经 $\Rstr_z$ 限制到 $z$ 得式~\eqref{eq:s5:loc2} 的首项；其余两项之差构成尾项。因此式~\eqref{eq:s5:loc2split} 为恒等式，而"用 $\Rstr_z[g_i^{(G)}]$ 这一全局量的限制去代表局部 $\Sigma^D$ 残差"则依赖局部性与线性化，整体结论标为\textbf{第二类（局部二阶近似）}。
+\end{remark}
+
+\begin{assumption}[局部性与限制算子线性化]\label{ass:s5:loc}
+Proposition~\ref{prop:s5:loc2} 由恒等式~\eqref{eq:s5:loc2split} 过渡到可用近似~\eqref{eq:s5:loc2} 须满足：（i）\emph{局部性}：在目标点 $z$ 的邻域内 $\Sigma_i^D(z)=\Rstr_z(G_i^*)$ 与 $\Sigma_{i-1}^D(z)=\Rstr_z(G_{i-1})$ 以可忽略误差成立（即全局几何在该 fiber 上的限制能代表局部 score covariance）；（ii）\emph{线性化}：限制算子 $\Rstr_z$ 在 $G_{i-1}$ 处可线性化，从而 $\Rstr_z(G_i^*)-\Rstr_z(G_{i-1})=\Rstr_z[g_i^{(G)}]+o(\|g_i^{(G)}\|)$；（iii）\emph{小步}：$\|g_i^{(G)}\|$ 与各 $\Delta_i$ 充分小，使一阶项主导。若任一条件不成立，式~\eqref{eq:s5:loc2} 的余项 $E_i^{(2)}(z)$ 不可忽略，应保留并归入状态递推的误差项 $E_i$。
+\end{assumption}
+
+\begin{caveat}[{$\Rstr_z[g_i^{(G)}]$ 不可与 $g_i^{(2,\mathrm{loc})}$ 混同}]\label{cav:s5:notequal}
+首项 $\Rstr_z[g_i^{(G)}]$ 只是局部二阶残差中"由全局 COV 残差贡献"的部分。当 $\E_\alpha[H_Y]$ 与 preference curvature 的残差不可忽略时，$g_i^{(2,\mathrm{loc})}(z)\neq\Rstr_z[g_i^{(G)}]$；原稿以单一 "$\approx$" 隐去尾项，本节将其显式保留为~\eqref{eq:s5:loc2} 的第二个加项。
+\end{caveat}
+
+\subsection{概念修正：不直接优化局部 COV，而是限制全局几何}
+
+\begin{remark}[方法论结论]\label{rem:s5:method}
+双残差结构给出一个关键的概念修正：我们\textbf{不}直接以某个局部 COV 矩阵 $\Sigma^{\mathrm{loc}}(z)$ 为优化对象。原因有二。其一，局部二阶形不可由单点直接稳定估计——其样本协方差估计的 bias 与 variance 在样本稀疏时均高，尤其在真子集 $D_2=S\subsetneq D_1$ 上 $\nu_2=\mathbf 1_S\,\nu_1/\nu_1(S)$ 的支撑很窄，单 fiber 内有效样本骤减。其二，局部景观本就由全局几何在目标 fiber 上的限制所决定（Sec.~\ref{sec:cov}）。因此正确做法是：用训练数据估计\emph{全局}数据场几何 $G_i^*(u_i)$，以全局 COV 残差 $g_i^{(G)}=G_i^*-G_{i-1}$ 作为驱动分量，再依赖限制算子 $\Rstr_z$ 在目标点 $z$ 附近给出所需的局部二阶信息。这把高方差的局部量优化，转化为低方差的全局量估计加确定性限制，正是 Sec.~\ref{sec:cov} 所述"楼塔问题"——抬高全局几何地基、并保证其限制到子集 fiber 时不偏——的数学动机。\textbf{（第三类：方法论/经验假设，依赖全局几何可由训练数据稳定估计、且其 $\Rstr_z$ 限制在目标点附近以低 bias 代表局部曲率。）}
+\end{remark}
+
+\begin{remark}[与状态递推的衔接]\label{rem:s5:recur}
+复合残差~\eqref{eq:s5:gres} 正是 Sec.~\ref{sec:state} 状态递推
+\begin{equation}\label{eq:s5:recur}
+S_{i+1}=S_i+\eta_i\,\cL_i(S_i,u_i)\,\gres_i(S_i,u_i)+E_i
+\end{equation}
+中被算子 $\cL_i$ 作用的对象。其中 $\cL_i$ 是带 ridge 收缩的线性响应算子 $\cL_i=\cL_i(S_i,u_i)$，作用于度量 $M_i[G_i]$ 与 ridge $\lambda_i$ 下的可达空间 $\cH_i$（见 Sec.~\ref{sec:control}）；仅在 $\lambda_i\to0$、闭值域、固定度量的极限下 $\cL_i$ 才退化为正交投影 $\ProjectOp$。式~\eqref{eq:s5:inner} 中的度量 $M$ 取为该步的 $M_i$，从而残差范数与训练机制所诱导的几何一致。本节只负责定义被驱动的残差及其内积结构；$\cL_i$ 如何把 $\gres_i$ 投到可达空间 $\cH_i$、以及由此得到的复合二次型 minmax 控制，留待 Sec.~\ref{sec:control} 展开。
+\end{remark}
+
+% ----- S6 (sec:control) -----
+\section{复合二次型最优控制与 minmax}\label{sec:control}
+
+本节把"全集--真子集"多阶段对齐刻画为一个\textbf{状态递推控制问题}：以复合状态 $S_i=(B_i,G_i)\in\cS=\cB\times\cG$ 为被控对象（势能场 $B_i$ 与全局 COV 几何 $G_i$ 见 Sec.~\ref{sec:potential} 与 Sec.~\ref{sec:dualres}），以阶段控制 $u_i$ 为决策，残差 $\gres_i$ 为驱动项。我们逐步给出：控制变量、可达响应算子 $\cL_i$、状态递推、阶段二次型损失、Bellman 递推与 robust minmax，并在每处标注其层级与所需假设。
+
+\subsection{控制变量}
+
+第 $i$ 阶段的控制聚合了数据、标签、目标与训练机制三类自由度。
+
+\begin{definition}[阶段控制]\label{def:s6:control}
+第 $i$ 阶段控制变量为
+\begin{equation}\label{eq:s6:control}
+u_i=\bigl(\nu_i,\;T_i,\;\gamma_i,\;\Phi_i^\dagger,\;\cH_i,\;M_i,\;\lambda_i,\;\eta_i\bigr)\in\cU_i,
+\end{equation}
+其中 $\nu_i$ 为阶段隐变量测度、$T_i$ 为标签映射、$\gamma_i\in[0,1]$ 为 data-tilt 指数、$\Phi_i^\dagger$ 为偏好势能（以上四者决定目标场 $q_i^*$ 与残差 $\gres_i$，见 Sec.~\ref{sec:potential}）；$\cH_i$ 为\textbf{可达子空间}（reachable / hypothesis / LoRA 子空间），$M_i$ 为度量、$\lambda_i\ge 0$ 为 ridge 参数、$\eta_i>0$ 为步长（以上四者决定训练机制如何把残差投到状态更新上）。$\cU_i$ 为容许控制集。
+\end{definition}
+
+\begin{caveat}\label{cav:s6:Hsubspace}
+此处 $\cH_i$ 是\emph{可达子空间}（$\cH$，calligraphic），与条件 log-density 的 Hessian $H_Y=\nabla_x^2\log q_t(x|y)$（plain $H$，见 Sec.~\ref{sec:cov}）是两个完全不同的对象。原稿在控制元组中写作 $H_i$，造成与 Hessian 的混淆；本稿一律以 $\cH_i$ 记可达子空间，绝不使用裸 $H_i$ 表示子空间。
+\end{caveat}
+
+\subsection{可达响应算子}
+
+训练机制把残差 $\gres_i$ 映射为对状态的实际增量。这一映射受三件事约束：只能在可达子空间 $\cH_i$ 内动（参数化/LoRA 限制），度量由几何状态 $G_i$ 诱导，且 ridge $\lambda_i$ 带来收缩。在给出算子前先把"度量由 $G_i$ 诱导"这一表述落实为显式映射，以消除原稿的跳步。
+
+\begin{definition}[几何诱导度量]\label{def:s6:metric}
+记 $\Rstr_z:\cG\to\Sym$ 为几何状态到点 $z=(c,x,t)$ 处局部二阶形的限制算子（见 Sec.~\ref{sec:cov} 的 Hessian/COV 分解），$\Sigma_i^{\mathrm{loc}}(z)=\Rstr_z G_i\in\Sym$。度量由几何状态\emph{显式}诱导为
+\begin{equation}\label{eq:s6:metric}
+M_i[G_i](z)=\phi\bigl(\Rstr_z G_i\bigr)=\phi\bigl(\Sigma_i^{\mathrm{loc}}(z)\bigr),
+\end{equation}
+其中 $\phi:\Sym\to\Sym_{\succeq0}$ 为一固定的正定化映射（例如 $\phi(\Sigma)=\Sigma+\epsilon\id$ 或 $\phi(\Sigma)=(\Sigma+\epsilon\id)$ 之类的 ridge 化，$\epsilon>0$），保证 $M_i[G_i](z)\succ0$ 从而 $\langle\cdot,\cdot\rangle_{M_i[G_i]}$ 为良定内积。
+\end{definition}
+
+\begin{definition}[可达响应算子]\label{def:s6:response}
+给定状态 $S_i=(B_i,G_i)$ 与控制 $u_i$，定义可达响应算子
+\begin{equation}\label{eq:s6:response}
+\cL_i(S_i,u_i)=\ProjectOp_{\cH_i}^{\,M_i[G_i],\,\lambda_i},
+\end{equation}
+即在度量 $M_i[G_i]$（由 \eqref{eq:s6:metric} 经 $\Rstr_z$ 从几何状态 $G_i$ 诱导）下、限制到可达子空间 $\cH_i$、带 ridge $\lambda_i$ 的\textbf{岭正则线性响应算子}。在 $M_i[G_i]$ 内积下，设 $P$ 为 $\cH_i$ 上的（无正则）正交投影、$A$ 为相应的响应（Gram）算子——$A$ 为 $M_i[G_i]$-自伴、半正定，支集落在 $\cH_i$ 上（故 $PA=AP=A$），则 $\cL_i$ 的作用形如 shrinkage：
+\begin{equation}\label{eq:s6:shrink}
+\cL_i=A\,(A+\lambda_i \id)^{-1}P,
+\end{equation}
+其特征值（在 $\cH_i$ 上为 $a/(a+\lambda_i)$，在 $\cH_i$ 外为 $0$）落在 $[0,1)$（当 $\lambda_i>0$）。
+\end{definition}
+
+\begin{remark}[度量诱导的层级]\label{rem:s6:tier-metric}
+\eqref{eq:s6:metric} 把"度量随几何漂移"显式参数化：$M_i[G_i]$ 随 $G_i$ 更新而变。给定 $\phi$ 与 $G_i$ 后，$M_i[G_i]$ 是\textbf{第一类}恒等定义；但用 $\Rstr_z G_i$（即 $\Sigma_i^{\mathrm{loc}}$）作为"训练的有效度量"是一项\textbf{第三类}建模选择（依赖 COV 几何估计的可测准确性，见 Sec.~\ref{sec:diagnostics}）。下文"fixed metric"极限即指 $\phi(\Rstr_z G_i)$ 在更新中冻结不变的情形。
+\end{remark}
+
+\begin{remark}[$\cL_i$ 是收缩线性响应，不是正交投影；第一类/第二类]\label{rem:s6:notprojection}
+必须强调：当 ridge $\lambda_i>0$ 时，$\cL_i$ 是\emph{带收缩的线性响应算子}，\textbf{不是幂等正交投影}，即
+\begin{equation}\label{eq:s6:nonidem}
+\cL_i^2\neq\cL_i .
+\end{equation}
+由 \eqref{eq:s6:shrink} 及 $PA=AP=A$，有 $\cL_i^2=A(A+\lambda_i\id)^{-1}A(A+\lambda_i\id)^{-1}P\neq\cL_i$，因为 $A(A+\lambda_i\id)^{-1}$ 的非零特征值 $a/(a+\lambda_i)\in(0,1)$ 不满足 $\sigma^2=\sigma$。它退化为正交投影 $\ProjectOp_{\cH_i}$ 当且仅当同时满足：$\lambda_i\to 0$、$\cH_i$ 上响应算子 $A$ 闭值域（closed range，使 $A(A+\lambda_i\id)^{-1}\to P$ 良定）、且度量 $M_i[G_i]$ 固定（fixed metric，不随更新漂移，见 Rem.~\ref{rem:s6:tier-metric}）。该极限恒等式属\textbf{第一类}（exact identity）；而把有限 $\lambda_i$ 下的 $\cL_i$ 当作投影来推断幅度则是\textbf{第二类}局部近似，仅在收缩比 $a/(a+\lambda_i)\approx 1$（强信号方向）成立。原稿把 $\cL_i$ 记为 $\ProjectOp$ 并隐含幂等性，本稿在此显式更正。
+\end{remark}
+
+\subsection{状态递推与阶段二次型损失}
+
+\begin{definition}[状态递推]\label{def:s6:recursion}
+复合状态按下式演化（与 Sec.~\ref{sec:state} 一致）：
+\begin{equation}\label{eq:s6:recursion}
+S_{i+1}=F_i(S_i,u_i)=S_i+\eta_i\,\cL_i(S_i,u_i)\,\gres_i(S_i,u_i)+E_i,\qquad S_i=(B_i,G_i),
+\end{equation}
+其中复合残差 $\gres_i=(g_i^{(0)},\sqrt{\rho_G}\,g_i^{(G)})$ 由势能残差 $g_i^{(0)}=\Center_{i-1}[U_i^*-B_{i-1}]$ 与全局 COV 残差 $g_i^{(G)}=G_i^*-G_{i-1}$ 堆叠（见 Sec.~\ref{sec:dualres}），$\rho_G>0$ 为两块的相对权重，$E_i$ 为高阶/估计误差项。
+\end{definition}
+
+\begin{remark}[递推驱动项的层级]\label{rem:s6:tier-recursion}
+\eqref{eq:s6:recursion} 中"已实现增量 $=\eta_i\cL_i\gres_i$"是一阶 linear response 近似（小步长 $\eta_i$、$\cH_i$ 内局部线性化），属\textbf{第二类}；其线性化误差与 $\eta_i^2\|\gres_i\|^2$ 同阶并吸收进 $E_i$。当 $\eta_i\to0$ 时该项为 $F_i$ 沿 $\gres_i$ 方向的精确方向导数，方向导数本身属第一类，幅度推断属第二类。
+\end{remark}
+
+阶段决策的代价以"未消除的残差"度量。一步更新后剩余残差与其二次型代价定义如下。
+
+\begin{definition}[残差二次型阶段损失]\label{def:s6:stageloss}
+单步更新后的\textbf{剩余残差}与\textbf{阶段损失}为
+\begin{align}
+r_i&=\bigl[\,\id-\eta_i\,\cL_i(S_i,u_i)\,\bigr]\,\gres_i, \label{eq:s6:residual}\\
+L_i^{\mathrm{stage}}(S_i,u_i)&=\langle r_i,\,Q_i\,r_i\rangle+\Omega_i(u_i),\qquad Q_i\succeq 0, \label{eq:s6:stagelossdef}
+\end{align}
+其中 $Q_i\succeq0$ 为加权矩阵（以 $\rho_G$ 编码势能块与 COV 块的相对重要性），$\Omega_i(u_i)\ge0$ 为控制正则（容量/数据/步长代价）。
+\end{definition}
+
+\begin{remark}[阶段损失的层级与几何含义]\label{rem:s6:tier-stage}
+$r_i=[\id-\eta_i\cL_i]\gres_i$ 表示"残差中未被本步响应吸收的分量"。算子 $\id-\eta_i\cL_i$ 在 $\cH_i$ 之外恒为 $\id$（不可达方向残差完全保留），在 $\cH_i$ 之内按 $1-\eta_i\cdot[a/(a+\lambda_i)]$ 收缩。$L_i^{\mathrm{stage}}$ 在给定 \eqref{eq:s6:residual}--\eqref{eq:s6:stagelossdef} 的二次型设定下是\textbf{第一类}恒等式；但它作为"真实训练代价"的代理依赖 $\gres_i$、$\cL_i$ 的二阶近似（见 Rem.~\ref{rem:s6:notprojection}、Rem.~\ref{rem:s6:tier-recursion}），故整体作为决策目标应视为\textbf{第二类}。
+\end{remark}
+
+\subsection{多步最优：Bellman 递推}
+
+逐步贪心地最小化各 $L_i^{\mathrm{stage}}$ 一般不是多阶段最优（一阶段的 fiber 选择改变 $G$ 与 $\cH$，影响后续可达性）。正确目标是动态规划。
+
+\begin{definition}[Bellman 价值递推]\label{def:s6:bellman}
+设共 $N$ 阶段、终端目标状态 $S^\dagger$、终端代价 $D_T(\cdot,\cdot)$，则价值函数满足
+\begin{align}
+V_N(S)&=D_T(S,S^\dagger),\label{eq:s6:terminal}\\
+V_i(S)&=\inf_{u\in\cU_i}\Bigl\{\,L_i^{\mathrm{stage}}(S,u)+V_{i+1}\bigl(F_i(S,u)\bigr)\Bigr\},\quad i=N-1,\dots,0.\label{eq:s6:bellman}
+\end{align}
+最优控制为 $u_i^\star(S)\in\argmin_{u\in\cU_i}\{L_i^{\mathrm{stage}}(S,u)+V_{i+1}(F_i(S,u))\}$。
+\end{definition}
+
+\begin{remark}\label{rem:s6:tier-bellman}
+\eqref{eq:s6:bellman} 的 Bellman 最优性原理对任意满足 \eqref{eq:s6:recursion} 的确定性递推与逐阶段可加代价是\textbf{第一类}（exact）结论；其作为对齐训练的有效目标仅在 $F_i,L_i^{\mathrm{stage}}$ 的二阶建模成立时为\textbf{第二类}。下确界的可达性（$\inf$ 是否取到）需 $\cU_i$ 紧、被积泛函下半连续，否则只能取 $\varepsilon$-最优控制。
+\end{remark}
+
+\subsection{Robust minmax}
+
+实际中残差 $\gres_i$、几何 $G_i$、标签映射 $T_i$ 都是估计量，含异质数据扰动、COV 估计误差与标签映射误差。把这些不确定性聚合为对手变量 $\zeta\in\cZ_i$，得鲁棒控制形式。
+
+\begin{assumption}[对手扰动模型]\label{asm:s6:adversary}
+存在紧的不确定集 $\cZ_i$，使得受扰残差与递推为
+\begin{equation}\label{eq:s6:perturbed}
+r_i(S,u,\zeta)=\bigl[\,\id-\eta_i\,\cL_i(S,u)\,\bigr]\,\gres_i(S,u,\zeta),\qquad S'=F_i(S,u,\zeta),
+\end{equation}
+其中 $\zeta$ 同时作用于 $\gres_i$（异质数据/偏好扰动）、$M_i[G_i]$ 经由 $\cL_i$（COV 估计误差）与 $T_i$（标签映射误差）。
+\end{assumption}
+
+\begin{definition}[Robust minmax 价值]\label{def:s6:minmax}
+在 Assumption~\ref{asm:s6:adversary} 下，鲁棒价值递推为
+\begin{equation}\label{eq:s6:minmax}
+V_i(S)=\inf_{u\in\cU_i}\ \sup_{\zeta\in\cZ_i}\ \Bigl\{\,\bigl\langle r_i(S,u,\zeta),\,Q_i\,r_i(S,u,\zeta)\bigr\rangle+V_{i+1}\bigl(F_i(S,u,\zeta)\bigr)\Bigr\},
+\end{equation}
+即对最坏情况扰动取上确界、再对控制取下确界。
+\end{definition}
+
+这里必须补全原稿掩盖的一处逻辑跳步：$\inf\sup$ 与 $\sup\inf$ 一般\emph{不}相等。
+
+\begin{assumption}[minimax 交换的 Sion 型条件；第三类]\label{asm:s6:sion}
+\eqref{eq:s6:minmax} 默认采用 $\inf_u\sup_\zeta$ 的次序，是一个\textbf{robust-control 目标}（对最坏扰动稳健），\emph{并不}自动等于经典 von Neumann 鞍点 $\sup_\zeta\inf_u$。要使两者相等（minimax 交换成立），需要 Sion 型条件：
+\begin{enumerate}[label=(\roman*)]
+\item 策略集 $\cU_i$ 凸、$\cZ_i$ 凸且紧（convex compact strategy sets）；
+\item payoff $J_i(u,\zeta)=\langle r_i(S,u,\zeta),Q_i r_i(S,u,\zeta)\rangle+V_{i+1}(F_i(S,u,\zeta))$ 对 $u$ 拟凸（quasiconvex）、对 $\zeta$ 拟凹（quasiconcave），且分别关于 $u$ 下半连续、关于 $\zeta$ 上半连续（convex--concave payoff）。
+\end{enumerate}
+当 (i)(ii) 成立时
+\begin{equation}\label{eq:s6:saddle}
+\inf_{u\in\cU_i}\sup_{\zeta\in\cZ_i}J_i(u,\zeta)=\sup_{\zeta\in\cZ_i}\inf_{u\in\cU_i}J_i(u,\zeta),
+\end{equation}
+存在鞍点 $(u_i^\star,\zeta_i^\star)$；否则只有弱对偶 $\inf\sup\ge\sup\inf$，\eqref{eq:s6:minmax} 仍是良定的 robust-control 目标，但\textbf{不是}经典 von Neumann 鞍点。
+\end{assumption}
+
+\begin{caveat}[关于交换条件难成立的提示；第三类]\label{cav:s6:nonconvex}
+本问题中 $J_i$ 对 $\zeta$ 含二次型 $\langle r_i,Q_i r_i\rangle$（$Q_i\succeq0$），若 $r_i$ 对 $\zeta$ 仿射，则该项对 $\zeta$ 为凸而非凹，Sion 凹性 (ii) 一般\emph{不}满足；同时 $\cU_i$ 含离散选择（如 fiber 继承 vs.\ 重建、$\cH_i$ 的选取）破坏凸性 (i)。因此 \eqref{eq:s6:saddle} 的 minimax 交换在一般对齐设定下\textbf{不可无条件套用}；应将 \eqref{eq:s6:minmax} 解释为对最坏情况的稳健下确界控制，其层级为\textbf{第三类}（依赖可验证的凸--凹/紧性结构假设方能升级为鞍点结论）。
+\end{caveat}
+
+\begin{remark}[与后续偏差--方差分解的衔接]\label{rem:s6:link}
+当对手集退化（$\cZ_i=\{\zeta_0\}$）时 \eqref{eq:s6:minmax} 退回确定性 Bellman \eqref{eq:s6:bellman}。把单阶段 $L_i^{\mathrm{stage}}$ 沿 $\gres_i$ 展开并代入 $r_i$ 的 $\cH_i$-投影结构，即得"全集投影偏差 + 真子集方差 + 不可达残差"的分解，这正是 Sec.~\ref{sec:biasvar} 与 Sec.~\ref{sec:fiber} 中 fiber 继承/重建判别的代价基础；其中"哪种策略更优"不构成无条件定理，而落到可测诊断量（见 Sec.~\ref{sec:diagnostics}）。
+\end{remark}
+
+% ----- S7 (sec:biasvar) -----
+\section{全集--真子集推论：偏差、方差与可达性}\label{sec:biasvar}
+
+第一阶段在全集 $D_1$ 上训练完成后，状态 $S_1=(B_1,G_1)$ 给出全局几何 $G_1\in\cG$ 与累计势能 $B_1$。本节处理真子集 $S=D_2\subsetneq D_1$ 的核心问题：第二阶段面对的并非"是否继续训练"，而是"继承第一阶段在 $S$ 的纤维上已建立的势能 $B_1^S$，还是用真子集重建该纤维以纠正全集投影偏差"。该决策由偏差、方差、可达性、势能残差与终端目标共同支配。原稿在此处以未定义算子 $A_S$、$\delta_B$ 与裸 $\approx$ 掩盖了若干逻辑跳步；本节是关键修复节，逐一补全这些定义并标注其层级。
+
+\subsection{子集势能 $B_1^S$：在受限几何上的对齐映射}
+
+第一阶段对全集中每个子点都建立了势能估计。由于 $S\subset D_1$，子集 $S$ 中的点在第一阶段已被赋予势能，记为 $B_1^S$。原稿把它写成 $B_1^S\approx A_S(\Rstr_S(G_1),D_1)$ 而未定义 $A_S$。我们将其改写并显式化：$B_1^S$ 是第一阶段的对齐映射 $\mathcal{A}_S$ 在受限几何 $\Rstr_S(G_1)$ 与数据 $D_1$ 上的取值，其中 $\Rstr_S:\cG\to\cG$ 是把全局几何状态限制到子集纤维（$y\in S$，即 $T_1(y)\in T_1(S)$）的算子（见 Sec.~\ref{sec:cov} 的 Hessian/COV 分解给出的 $\Rstr_z,\Rstr_S$）。
+
+\begin{definition}[第一阶段子集对齐映射 $\mathcal{A}_S$ 与子集势能 $B_1^S$]\label{def:s7:AS}
+设第一阶段在 $D_1$ 上的对齐流以受限几何为度量先验，把残差能量沿可达子空间 $\cH_1$ 写入势能。定义\emph{对齐映射}
+\begin{equation}\label{eq:s7:AS}
+\mathcal{A}_S:\;(\Gamma,\,D)\;\longmapsto\;\Center_{0}\!\bigl[\cL_1(\Gamma)\,(U_S^*-B_0)\bigr],\qquad B_0\equiv 0,
+\end{equation}
+其中 $\Gamma\in\Sym$ 是一个（受限）几何二阶型，$\cL_1(\Gamma)$ 是以 $\Gamma$ 为度量、岭参数 $\lambda_1$ 的线性响应算子（$\cL_1$ 非投影，仅 $\lambda_1\to0$、闭值域、固定度量极限退化为 $\ProjectOp$；见 Sec.~\ref{sec:dualres}）。子集势能即为
+\begin{equation}\label{eq:s7:B1S}
+\boxed{\;B_1^S \;=\; \mathcal{A}_S\!\bigl(\Rstr_S(G_1),\,D_1\bigr)\;}
+\end{equation}
+即"在受限几何 $\Rstr_S(G_1)$ 上、由全集数据 $D_1$ 产生的子集纤维势能"。
+\end{definition}
+
+\begin{remark}[$B_1^S$ 不等于"已学会 $D_2$"]\label{rem:s7:meaning}
+\eqref{eq:s7:B1S} 表明 $B_1^S$ 是\emph{全集几何投影到 $S$ 之后}的稳定但可能有偏的势能估计，而非真子集目标 $B_S^*$。第二阶段决策的本质，是决定是否纠正 $\Rstr_S$ 引入的投影偏差。
+\end{remark}
+
+\textbf{分层标注。}\ \eqref{eq:s7:AS}--\eqref{eq:s7:B1S} 给出的是 $B_1^S$ 对几何 $\Gamma$ 的\emph{依赖结构}的精确记号（第一类，definitional），其良定义性以 $\cL_1$ 在 $\Gamma$ 上的有界性与 $U_S^*\ll p_{0,t}$ 为条件（见 Sec.~\ref{sec:potential}）。
+
+\subsection{几何估计的偏差--方差分解}
+
+第一阶段交付的是有限样本估计 $\widehat{G}_1$，其受限值 $\Rstr_S(\widehat{G}_1)$ 与第二阶段可得的直接子集估计 $\widehat{G}_S$ 携带不同的误差结构。设 $G_S^*\in\Sym$ 为子集真实目标几何（$S$ 子目标的二阶型）。
+
+\begin{definition}[受限全集估计与直接子集估计的误差分解]\label{def:s7:decomp}
+\begin{align}
+\Rstr_S(\widehat{G}_1) &= G_S^* + \varepsilon_{\mathrm{proj}} + \varepsilon_{\mathrm{stat}}^{(D_1)},\label{eq:s7:full}\\
+\widehat{G}_S &= G_S^* + \varepsilon_{\mathrm{stat}}^{(S)}.\label{eq:s7:sub}
+\end{align}
+其中：
+\begin{itemize}
+\item $\varepsilon_{\mathrm{proj}} := \E\bigl[\Rstr_S(\widehat{G}_1)\bigr]-G_S^*$ 为\emph{确定性投影/近似偏差}（projection bias），刻画"全集几何限制到子集纤维"与"子集真实几何"之间的系统失配；它\emph{不随样本数衰减}。
+\item $\varepsilon_{\mathrm{stat}}^{(D_1)} := \Rstr_S(\widehat{G}_1)-\E[\Rstr_S(\widehat{G}_1)]$ 与 $\varepsilon_{\mathrm{stat}}^{(S)} := \widehat{G}_S-\E[\widehat{G}_S]$ 为\emph{零均值统计误差}，$\E[\varepsilon_{\mathrm{stat}}^{(\cdot)}]=0$，其协方差随对应样本计数增大而衰减（典型地 $\Var\propto 1/N$）。这里假设 $\widehat{G}_S$ 关于 $G_S^*$ 渐近无偏，故 \eqref{eq:s7:sub} 不含确定性偏差项。
+\end{itemize}
+\end{definition}
+
+\begin{proposition}[受限全集 vs.\ 直接子集：偏差--方差对置]\label{prop:s7:biasvar}
+在 Def.~\ref{def:s7:decomp} 的记号下，
+\begin{align}
+\mathrm{Bias}\bigl(\Rstr_S(\widehat{G}_1)\bigr)=\varepsilon_{\mathrm{proj}}\neq 0,\qquad
+&\mathrm{Bias}\bigl(\widehat{G}_S\bigr)=0,\label{eq:s7:bias}\\
+\Var\bigl(\Rstr_S(\widehat{G}_1)\bigr)=\Var\bigl(\varepsilon_{\mathrm{stat}}^{(D_1)}\bigr)\;\lesssim\;
+&\Var\bigl(\varepsilon_{\mathrm{stat}}^{(S)}\bigr)=\Var\bigl(\widehat{G}_S\bigr),\label{eq:s7:var}
+\end{align}
+即直接子集估计 $\widehat{G}_S$ \emph{偏差更低、方差更高}，受限全集估计 $\Rstr_S(\widehat{G}_1)$ \emph{偏差更高（含 $\varepsilon_{\mathrm{proj}}$）、方差更低}。
+\end{proposition}
+
+\noindent\textbf{论证.}\ 偏差式 \eqref{eq:s7:bias} 直接取 \eqref{eq:s7:full}--\eqref{eq:s7:sub} 的期望并用 $\E[\varepsilon_{\mathrm{stat}}^{(\cdot)}]=0$。方差不等式 \eqref{eq:s7:var} 中，$|D_1|\ge|S|$ 故 $\Rstr_S(\widehat{G}_1)$ 用更多样本估计同一二阶型，统计误差更小；$\lesssim$ 在"两估计采用同型估计量、协方差以样本数为主导标度"的前提下成立。\hfill$\square$
+
+\begin{caveat}[$\lesssim$ 的隐含假设]\label{cav:s7:var}
+\eqref{eq:s7:var} 把 $\widehat{G}_1$ 的全部样本计入对 $\Rstr_S(\widehat{G}_1)$ 的方差衰减，隐含假设是\emph{全集样本中与子集纤维相关的信息有效转移}。若全集异质性高、子集纤维方向与全集主方向相悖，则受限估计的有效样本远少于 $|D_1|$，$\lesssim$ 可退化。此为第三类（经验/可测）边界条件，应由子集纤维上的有效样本量诊断。
+\end{caveat}
+
+\textbf{分层标注。}\ Def.~\ref{def:s7:decomp} 是记号约定（第一类）；Prop.~\ref{prop:s7:biasvar} 在无偏性与样本标度假设下为第二类（依赖渐近/有限样本标度），偏差部分则是第一类恒等式。
+
+\subsection{势能可定义性误差：从几何扰动到势能扰动}\label{subsec:s7:deltaB}
+
+几何估计的误差会经 $\mathcal{A}_S$ 传导到势能本身。原稿用未定义的 $\delta_B$ 表示这一传导。我们将其严格定义为对齐映射 $\mathcal{A}_S$ 关于几何的一阶 Fréchet 导数。
+
+\begin{definition}[势能--几何敏感度算子 $\delta_B$]\label{def:s7:deltaB}
+设 $\mathcal{A}_S(\cdot,D_1)$ 在 $G_S^*$ 处 Fréchet 可微，其导数记为 $D_G\mathcal{A}_S := D_G\mathcal{A}_S(G_S^*,D_1):\Sym\to\cB$。定义\emph{势能可定义性误差算子}
+\begin{equation}\label{eq:s7:deltaB}
+\boxed{\;\delta_B(\varepsilon)\;:=\;D_G\mathcal{A}_S\,\varepsilon\;}\qquad(\varepsilon\in\Sym),
+\end{equation}
+即几何扰动 $\varepsilon$ 经对齐映射在势能空间 $\cB$ 上诱导的一阶（线性化）响应。
+\end{definition}
+
+把 \eqref{eq:s7:full} 写成 $\Rstr_S(\widehat{G}_1)=G_S^*+(\varepsilon_{\mathrm{proj}}+\varepsilon_{\mathrm{stat}}^{(D_1)})$，并对 $\mathcal{A}_S(\cdot,D_1)$ 在 $G_S^*$ 处作一阶 Taylor 展开（记 $B_S^*:=\mathcal{A}_S(G_S^*,D_1)$），得
+
+\begin{equation}\label{eq:s7:B1S_expand}
+\boxed{\;B_1^S \;=\; B_S^* \;+\; \delta_B\bigl(\varepsilon_{\mathrm{proj}}\bigr) \;+\; \delta_B\bigl(\varepsilon_{\mathrm{stat}}^{(D_1)}\bigr) \;+\; o(\|\varepsilon\|)\;}
+\end{equation}
+
+\textbf{分层标注。}\ \eqref{eq:s7:deltaB}--\eqref{eq:s7:B1S_expand} 是\emph{第二类}（局部二阶/一阶线性化近似），其有效性要求几何误差 $\varepsilon=\varepsilon_{\mathrm{proj}}+\varepsilon_{\mathrm{stat}}^{(D_1)}$ 充分小、$\mathcal{A}_S$ 在 $G_S^*$ 邻域光滑、且高阶余项 $o(\|\varepsilon\|)$ 可忽略。
+
+\begin{remark}[第二阶段残差是 $U_S^*-B_1^S$，而非 $U_S^*-B_0$]\label{rem:s7:residual}
+由 \eqref{eq:s7:B1S_expand}，第二阶段真子集训练所面对的势能残差不是从零势能 $B_0$ 起算的 $U_S^*-B_0$，而是
+\begin{equation}\label{eq:s7:stage2res}
+U_S^*-B_1^S \;=\; \bigl(U_S^*-B_S^*\bigr)\;-\;\delta_B\bigl(\varepsilon_{\mathrm{proj}}\bigr)\;-\;\delta_B\bigl(\varepsilon_{\mathrm{stat}}^{(D_1)}\bigr)\;+\;o(\|\varepsilon\|),
+\end{equation}
+它\emph{已经携带第一阶段的稳定性（$\delta_B(\varepsilon_{\mathrm{stat}}^{(D_1)})$ 项较小）与投影偏差（$\delta_B(\varepsilon_{\mathrm{proj}})$ 项不衰减）}。这是继承路径"低残差但保偏差"的来源：继承同一纤维时，第二阶段的中心化残差为 $g_2^{(0)}=\Center_1[U_S^*-B_1^S]$（见 Sec.~\ref{sec:dualres} 的双残差 $\gres$），其中 $\delta_B(\varepsilon_{\mathrm{proj}})$ 不被消去，会沿同一地基被二次强化。
+\end{remark}
+
+\subsection{核心张力与重建判据}
+
+综合 Prop.~\ref{prop:s7:biasvar} 与 \eqref{eq:s7:stage2res}：
+
+\begin{center}
+\fbox{\parbox{0.94\textwidth}{\textbf{核心张力。}\ 继承全集纤维 $=$ 低方差、高连续性、\emph{保留}投影偏差 $\delta_B(\varepsilon_{\mathrm{proj}})$；重建真子集纤维 $=$ 低偏差、高方差、上限更高但更不稳定。无条件全序最优\emph{不存在}：决策取决于数据量、投影误差、可达性、岭强度与终端目标。}}
+\end{center}
+
+设第二阶段步长 $\eta_2$、线性响应 $\cL_2$、终端二次型度量 $Q\succeq 0$（由终端目标 $U_S^*$ 与度量 $M_2$ 诱导）。两条路径的\emph{期望剩余残差能量}定义为施加一步更新 $(\id-\eta_2\cL_2)$ 后的复合残差在 $Q$ 度量下的能量：
+\begin{equation}\label{eq:s7:J}
+J_\bullet \;:=\; \E\Bigl\langle (\id-\eta_2\cL_2)\,\gres_\bullet,\; Q\,(\id-\eta_2\cL_2)\,\gres_\bullet\Bigr\rangle,\qquad \bullet\in\{\text{inherit},\text{rebuild}\},
+\end{equation}
+其中继承路径 $\gres_{\text{inherit}}$ 以 $g_2^{(0)}=\Center_1[U_S^*-B_1^S]$ 与 $g_2^{(G)}=G_S^*-\Rstr_S(G_1)$ 堆叠（几何残差小、含偏差），重建路径 $\gres_{\text{rebuild}}$ 以直接子集估计 $\widehat{G}_S$ 重设几何（偏差小、方差大）。期望 $\E[\cdot]$ 同时对统计误差 $\varepsilon_{\mathrm{stat}}^{(\cdot)}$ 取平均，故 $J_\bullet$ 含偏差平方项与方差项。
+
+\begin{proposition}[重建判据：期望剩余残差能量比较]\label{prop:s7:rebuild}
+在 \eqref{eq:s7:J} 的记号与"一步局部线性化、$Q$ 固定、$\cL_2$ 在两路径上度量可比"的前提下，
+\begin{equation}\label{eq:s7:criterion}
+\boxed{\;\text{选择重建}\;\iff\; J_{\text{rebuild}} < J_{\text{inherit}}\;}
+\end{equation}
+等价地，将 $\E\|\cdot\|_Q^2 = \|\text{Bias}\|_Q^2+\tr(Q\,\Cov)$ 代入并把各源项展开，重建正收益当且仅当
+\begin{equation}\label{eq:s7:criterion2}
+\underbrace{\bigl\|\,\delta_B(\varepsilon_{\mathrm{proj}})\,\bigr\|_{Q'}^2}_{\textstyle \text{偏差下降 Bias\_reduction}}
+\;>\;
+\underbrace{\Delta\!\Var}_{\textstyle \text{方差增加}}
+\;+\;
+\underbrace{\Delta\mathrm{Reach}_{\cH}}_{\textstyle \text{可达性损失}}
+\;+\;
+\underbrace{\Delta\!\Phi}_{\textstyle \text{额外势能高度}},
+\end{equation}
+其中 $Q'$ 是经 $(\id-\eta_2\cL_2)$ 与 $Q$ 诱导的有效度量；$\Delta\!\Var = \tr\!\bigl(Q'(\Cov(\varepsilon_{\mathrm{stat}}^{(S)})-\Cov(\varepsilon_{\mathrm{stat}}^{(D_1)}))\bigr)\ge 0$ 为重建引入的方差增量（由 Prop.~\ref{prop:s7:biasvar} 非负）；$\Delta\mathrm{Reach}_{\cH}\ge0$ 为重建纤维落在可达子空间 $\cH_2$ 之外而损失的可写入能量；$\Delta\!\Phi\ge0$ 为重建纤维相对继承纤维抬高的势能残差高度（"楼塔地基"项）。
+\end{proposition}
+
+\noindent\textbf{论证.}\ \eqref{eq:s7:criterion} 是 $J$ 比较的定义性陈述。\eqref{eq:s7:criterion2} 由偏差--方差分解 $\E\|X\|_Q^2=\|\E X\|_Q^2+\tr(Q\Cov X)$ 作用于 \eqref{eq:s7:J} 得到：继承路径的偏差项含 $\delta_B(\varepsilon_{\mathrm{proj}})$（经 \eqref{eq:s7:stage2res}），重建路径将其消去但增加方差 $\Var(\varepsilon_{\mathrm{stat}}^{(S)})>\Var(\varepsilon_{\mathrm{stat}}^{(D_1)})$；可达性与势能高度差分别记为 $\Delta\mathrm{Reach}_{\cH},\Delta\!\Phi$。整理同号项即得判据。\hfill$\square$
+
+\begin{caveat}[判据各项均为可测诊断，而非闭式定理]\label{cav:s7:diag}
+\eqref{eq:s7:criterion2} 不给出无条件结论：四项均须落到可测诊断（见 Sec.~\ref{sec:diagnostics}）。具体地——$\|\delta_B(\varepsilon_{\mathrm{proj}})\|_{Q'}^2$ 由受限几何与子集直接估计之差经 $D_G\mathcal{A}_S$ 传导后估计；$\Delta\!\Var$ 由子集纤维上的有效样本量估计；$\Delta\mathrm{Reach}_{\cH}$ 由重建方向在 $\cH_2$ 上的可达投影残量估计；$\Delta\!\Phi$ 由两路径的中心化势能残差范数估计。任一项失估，判据即不可判定。
+\end{caveat}
+
+\textbf{分层标注。}\ Prop.~\ref{prop:s7:rebuild} 为\emph{第三类}（经验假设 / 可测诊断）：\eqref{eq:s7:criterion} 是定义性比较，\eqref{eq:s7:criterion2} 依赖一阶线性化（第二类）与四个可测项的可估性（第三类）。它形式化了原稿的口语判据"重建当且仅当 偏差下降 $>$ 方差增加 $+$ 可达性损失 $+$ 额外势能高度"，但明确其为对\emph{期望残差能量}的不等式，而非无条件最优性陈述。
+
+\begin{remark}[与"楼塔问题"及一般化的衔接]\label{rem:s7:tower}
+\eqref{eq:s7:criterion2} 解释了"楼变高未必坏"：抬高的势能高度 $\Delta\!\Phi$ 是代价，但若全局 COV 改善并经局部投影显著提升可达性（即等效地降低 $\delta_B(\varepsilon_{\mathrm{proj}})$ 主导的偏差项），净收益仍可为正——脚下地面升得更多即为赚。该结论与具体模态无关：把 $y=(A,P,W,R)$ 换成 LLM 的领域/任务/风格/偏好，结构不变（见 Sec.~\ref{sec:llm}）；FM 的特殊之处仅在于 COV 场显式出现于 score 的 Hessian $H_Y$ 中（见 Sec.~\ref{sec:cov}），LLM 中则更隐含。继承/重建作为两条具体策略，其纤维路径展开见 Sec.~\ref{sec:strategies}。
+\end{remark}
+
+% ----- S8 (sec:case) -----
+\section{重点案例：先画风后人物}\label{sec:case}
+% ============================================================
+
+本节把抽象的状态递推对象落到一个具体工程案例：单画师 $a_0$ 的多人物数据集，其中含角色 SKADI；目标是先把画风对齐到 $a_0$，再把人物对齐到 SKADI。本节以严格散文为主，逐一指出该案例在哪些点上与通常的"先学画风、再学人物"直觉相符，又在哪些点上与之相悖。本节不引入新的恒等式，所用全部对象（点 $z=(c,x,t)$、潜变量 $y=(A,P,W,R)$、全局几何 $G_i$、限制算子 $\Rstr_z,\Rstr_S$、势能 $B_i$、复合状态 $S_i=(B_i,G_i)$）均按 Sec.~\ref{sec:state}、Sec.~\ref{sec:cov}、Sec.~\ref{sec:potential} 已定义者使用；偏差--方差权衡与纤维继承/重建的判据则引用 Sec.~\ref{sec:biasvar} 与 Sec.~\ref{sec:fiber}。
+
+% ------------------------------------------------------------
+\subsection{正确的设定：两阶段、真子集、而非新数据}\label{s8:setting}
+% ------------------------------------------------------------
+
+首先须把工程语言中的"两步训练"精确翻译为本理论的全集--真子集结构，否则后续判据会被错误的数据假设污染。
+
+\begin{definition}[SKADI 案例的数据结构]\label{s8:def-data}
+两阶段对齐定义如下。
+\begin{itemize}
+\item \emph{阶段 1（全集）}：单一画师 $a_0$ 的\textbf{多人物}数据集
+\[
+D_1=\bigl(a_0,\;P_{\mathrm{set}},\;W_P,\;R\bigr),
+\]
+即潜变量元组 $y=(A,P,W,R)$ 在该数据集上取 $A=a_0$（固定画风/域）、$P\in P_{\mathrm{set}}$（一组角色，含 SKADI）、$W=W_P$（随角色变化的可控属性/服装）、$R$ 为残差视觉因子。其潜测度记 $\nu_1(dy)$。
+\item \emph{阶段 2（真子集）}：阶段 1 中\textbf{属于 SKADI 的子集}
+\[
+D_2=S=\bigl(a_0,\;\mathrm{SKADI},\;W_{\mathrm{SKADI}},\;R\bigr)\subsetneq D_1,
+\]
+即在同一 $\nu_1$ 上条件到事件 $\{P=\mathrm{SKADI}\}$。其潜测度由限制给出
+\begin{equation}\label{s8:eq:nu2}
+\nu_2(dy)=\nu_1\!\bigl(dy\mid y\in S\bigr)=\frac{\mathbf{1}_S(y)\,\nu_1(dy)}{\nu_1(S)},\qquad \nu_1(S)\in(0,1).
+\end{equation}
+\end{itemize}
+\end{definition}
+
+\begin{remark}[三处必须澄清的误读]\label{s8:rem-misread}
+此设定与三种常见误读不同，它们会改变后文判据的成立条件：
+\begin{enumerate}[label=(\roman*),leftmargin=*]
+\item 阶段 2 \textbf{不是新数据}：$D_2$ 是 $D_1$ 的真子集，$\nu_2$ 是 $\nu_1$ 的条件测度~\eqref{s8:eq:nu2}，而非外部引入的、可能与 $\nu_1$ 互奇异的新分布。这保证阶段 2 不引入新的 reachability 方向之外的支撑外质量，是后文"继承同一 fiber"成为合法选项的前提。
+\item 阶段 2 \textbf{不是单张 SKADI}：$D_2$ 是 SKADI 的整个子集（多姿态、多 $W_{\mathrm{SKADI}}$、多 $R$），故其上的子集几何估计 $\widehat G_S$ 有非平凡的样本量 $n_2=\nu_1(S)\,n_1$ 数量级，可讨论方差，而非退化为 $\delta$ 测度。
+\item 画风标签与人物标签\textbf{分离}：标签映射 $T_i:y\mapsto c$ 把画风分量 $A=a_0$ 映到独立的 style fiber $c_A$，把人物分量 $P=\mathrm{SKADI}$ 映到 person fiber。二者在 caption 中占据可分离的坐标，故"对齐画风"与"对齐人物"对应不同的条件纤维，可分别讨论其势能与几何。
+\end{enumerate}
+\end{remark}
+
+\begin{definition}[相关纤维]\label{s8:def-fibers}
+按 $\nu_i(dy\mid c)=\nu_i(dy\mid T_i(y)=c)$，本案例涉及三条纤维：
+\begin{itemize}
+\item $c_A$：\emph{画风纤维}（$A=a_0$），在两阶段中始终作为一条单独的 fiber 存在，因 $a_0$ 在 $D_1$ 与 $D_2$ 中均固定。
+\item $c_S^{(1)}$：\emph{阶段 1 的 SKADI 人物纤维}，即在 $\nu_1$ 下条件到 $\{P=\mathrm{SKADI}\}$ 的人物 fiber；它嵌在 $a_0$ 的多人物语境中。
+\item $c_S^{(2)}$：\emph{阶段 2 的 SKADI 人物纤维}，即在 $\nu_2$ 下的同一人物 fiber。
+\end{itemize}
+作为集合，$c_S^{(1)}$ 与 $c_S^{(2)}$ 指向同一语义对象（同一 SKADI），但二者所依托的\textbf{几何不同}：前者的 posterior responsibility $\alpha_1(\cdot\mid x,c_S^{(1)},t)$ 在 $\nu_1$ 的全集上归一，后者 $\alpha_2$ 在 $\nu_2$ 的子集上归一。这一区别是 8.3 决策的全部根源。
+\end{definition}
+
+% ------------------------------------------------------------
+\subsection{第一阶段的实质：同时做两件事}\label{s8:stage1}
+% ------------------------------------------------------------
+
+工程直觉常把阶段 1 概括为"只学画风"。这是不完整的：用 $D_1$ 训练同时产生了两个对下游有用的产物，分别属于全局几何 $G_i$ 与累计势能 $B_i$ 两个状态分量。
+
+\begin{enumerate}[label=\textbf{(\arabic*)},leftmargin=*]
+
+\item \textbf{全局 COV 几何估计 $G_1$。}
+阶段 1 在 $a_0$ 的多人物数据上估计全局几何状态
+\[
+G_1\in\cG\quad(\text{全局 COV / posterior-cumulant 几何}),
+\]
+其局部二阶形由限制算子给出 $\Sigma_1^{\mathrm{loc}}(z)=\Rstr_z(G_1)$，其中按 Sec.~\ref{sec:cov} 的定义，局部形对应 posterior score covariance $\Sigma_1^D(z)=\Cov_{\alpha_1}(s_Y)$。关键之处在于：$G_1$ 的样本支撑是\textbf{整个 $P_{\mathrm{set}}$}，而非仅 SKADI。多人物覆盖使 $G_1$ 在以下两重意义上更优于任何单角色估计——
+\begin{itemize}
+\item \emph{更稳定（低 variance）}：估计 $G_1$ 的有效样本量为全集 $n_1$，远大于子集 $n_2=\nu_1(S)\,n_1$；
+\item \emph{更广覆盖（低 bias of the shared geometry）}：$a_0$ 画风所共享的 COV 结构（笔触、配色、构图先验等跨角色不变的二阶几何）由多角色数据共同约束，方向覆盖更全。
+\end{itemize}
+此处"更稳定/更广"是关于估计量 $\widehat G_1$ 的\textbf{第三类}（经验/可测）陈述，其量化与可证伪形式见 Sec.~\ref{sec:biasvar}：方差随有效样本量下降、共享方向的覆盖随角色多样性上升，均为可测诊断而非无条件定理。
+
+\item \textbf{SKADI 子集的单点势能 $B_1^S$。}
+因 SKADI \textbf{已在} $D_1$ 之中，阶段 1 不仅给出全局几何，还在该几何上为 SKADI 人物纤维建立了势能估计。记
+\[
+B_1^S(c,x,t)=B_1(c,x,t)\big|_{c\in c_S^{(1)}}=\log\frac{p_{1,t}(x\mid c)}{p_{0,t}(x\mid c)}\bigg|_{c\in c_S^{(1)}},
+\]
+即累计势能 $B_1$ 在阶段 1 SKADI 纤维上的取值。该势能是\textbf{构建在 $\Rstr_S(G_1)$ 之上}的：限制算子 $\Rstr_S$ 把全局几何 $G_1$ 投影到 SKADI 子集纤维，给出该子集处的二阶形 $\Rstr_S(G_1)$，势能更新 $g_1^{(0)}=\Center_{0}[U_1^*-B_0]$ 在此度量下被线性响应算子 $\cL_1$ 作用而写入 $B_1$。
+\end{enumerate}
+
+\begin{remark}[阶段 1 \emph{不是}"只学画风"]\label{s8:rem-not-only-style}
+综合 (1)(2)：阶段 1 的产物是\textbf{复合状态分量的双重更新}——既更新了 $G$ 分量（全局几何 $G_1$），又在该几何的子集限制 $\Rstr_S(G_1)$ 上更新了 $B$ 分量在 SKADI 纤维上的势能 $B_1^S$。因此把阶段 1 概括为"仅画风"会丢掉一个关键事实：SKADI 的人物势能在阶段 1 结束时\textbf{已经非平凡地存在}，只是它依托的是\emph{全集几何的子集投影} $\Rstr_S(G_1)$，而非 SKADI 子集自身估计的几何。这正是阶段 2 决策的对象。
+\end{remark}
+
+\begin{caveat}[$\Rstr_S(G_1)$ 携带全集投影偏差]\label{s8:cav-projbias}
+$B_1^S$ 依托的二阶形 $\Rstr_S(G_1)$ 是把\textbf{全集}几何 $G_1$ 限制到 SKADI 纤维的结果，而非 SKADI 子集的真实目标几何 $G_S^*$。当 $a_0$ 的其他角色在共享 COV 方向上与 SKADI 不一致时，$\Rstr_S(G_1)$ 相对 $G_S^*$ 含有一项不随样本量消失的\textbf{投影偏差（projection bias）}
+\[
+b_{\mathrm{proj}}:=\Rstr_S(G_1)-G_S^*\;(\text{的几何度量差}),
+\]
+这是结构性偏差而非估计噪声。该偏差是否需要在阶段 2 修正，正是 8.3 的核心问题；其精确判据属 Sec.~\ref{sec:fiber} 的纤维继承/重建分析。此处仅标明：$\Rstr_S(G_1)\neq G_S^*$ 一般成立，等号仅在 SKADI 的子集几何与全集共享几何在 SKADI 纤维上重合时（如 $a_0$ 各角色二阶几何同构）才出现。
+\end{caveat}
+
+% ------------------------------------------------------------
+\subsection{第二阶段的实质：是否用子集几何修正全集投影}\label{s8:stage2}
+% ------------------------------------------------------------
+
+承 8.2：阶段 1 已在 $\Rstr_S(G_1)$ 上给出 SKADI 势能 $B_1^S$，但 $\Rstr_S(G_1)$ 携带不可约的投影偏差 $b_{\mathrm{proj}}$（Cav.~\ref{s8:cav-projbias}）。阶段 2 用真子集 $D_2=S$ 继续训练，其真正的决策\textbf{不是}"要不要学 SKADI"（SKADI 势能已存在），而是：
+
+\begin{equation}\label{s8:eq:decision}
+\boxed{
+\text{是否用子集几何估计 }\widehat G_S\text{ 去修正阶段 1 的投影 }\Rstr_S(G_1)\text{ 所含的偏差 }b_{\mathrm{proj}}\;?
+}
+\end{equation}
+
+\begin{definition}[阶段 2 涉及的两个几何]\label{s8:def-geoms}
+\begin{itemize}
+\item $G_S^*$：\emph{目标子集几何}，即 SKADI 子集纤维上理想的 COV/cumulant 几何（对应目标 $q_S^*$ 处的 posterior score covariance）。它是阶段 2 在 $G$ 分量上想要逼近的真值。
+\item $\widehat G_S$：\emph{子集几何估计}，即仅用 $D_2=S$ 的数据（样本量 $n_2$）估计的 SKADI 子集几何。
+\end{itemize}
+\end{definition}
+
+两条候选路径对应 Sec.~\ref{sec:fiber} 的纤维\textbf{继承} vs.\ \textbf{重建}：
+
+\begin{itemize}[leftmargin=*]
+\item \textbf{继承（inherit）}：阶段 2 沿用阶段 1 的同一 fiber，即继续在 $\Rstr_S(G_1)$ 度量上推进 SKADI 势能，不重估几何。其几何分量保留全集投影 $\Rstr_S(G_1)$。
+\item \textbf{重建（rebuild）}：阶段 2 用子集估计 $\widehat G_S$ 替换（或部分替换）$\Rstr_S(G_1)$，以修正投影偏差 $b_{\mathrm{proj}}$。
+\end{itemize}
+
+\begin{remark}[继承与重建的偏差--方差对立]\label{s8:rem-biasvar}
+两条路径恰好落在 Sec.~\ref{sec:biasvar} 的 bias--variance 两端：
+\begin{itemize}
+\item \emph{继承 $\Rstr_S(G_1)$}：\textbf{低方差、高（投影）偏差}。几何由全集 $n_1$ 个样本约束，估计噪声小；但保留结构性投影偏差 $b_{\mathrm{proj}}$（Cav.~\ref{s8:cav-projbias}），即使 $n_2\to\infty$ 也不消失。
+\item \emph{重建 $\widehat G_S$}：\textbf{低（投影）偏差、高方差}。直接对准 $G_S^*$，结构性投影偏差被消除（$\widehat G_S\to G_S^*$ 当 $n_2\to\infty$）；但仅由子集 $n_2$ 个样本估计，方差按 $\sim 1/n_2$ 量级，且在被全集共享几何良好约束的方向上反而\textbf{劣化}（丢弃了 $G_1$ 的统计力）。
+\end{itemize}
+\end{remark}
+
+\begin{proposition}[阶段 2 几何决策的判据形式]\label{s8:prop-criterion}
+设以几何度量下的均方误差 $\mathrm{MSE}(\widehat G)=\E\|\,\widehat G-G_S^*\,\|_{\mathcal M}^2$ 为准（$\mathcal M$ 为 Sec.~\ref{sec:fiber} 指定的、$\cG$ 上的度量，区别于函数空间度量 $M_i$），则"重建优于继承"当且仅当
+\begin{equation}\label{s8:eq:criterion}
+\underbrace{\E\big\|\Rstr_S(G_1)-G_S^*\big\|_{\mathcal M}^2}_{\approx\,\|b_{\mathrm{proj}}\|^2_{\mathcal M}\,+\,\text{(全集低方差项)}}
+\;>\;
+\underbrace{\E\big\|\widehat G_S-G_S^*\big\|_{\mathcal M}^2}_{\approx\,\Var(\widehat G_S)\ (\text{近无偏、高方差}\sim 1/n_2)}.
+\end{equation}
+即：当主导 LHS 的投影偏差 $\|b_{\mathrm{proj}}\|_{\mathcal M}^2$（加上全集的小方差项）超过子集估计方差时，重建更优；反之继承更优。更细的做法是按方向（谱坐标）分块决策——在全集共享得好的方向继承，在 SKADI 特异方向重建——其精确分解（含 ridge 收缩 $\lambda_i$ 在两者间插值的最优凸组合）见 Sec.~\ref{sec:fiber}。
+\end{proposition}
+
+\begin{remark}[分级标注]\label{s8:rem-tier}
+本节结论的层级如下，以免 over-claiming：
+\begin{itemize}
+\item Def.~\ref{s8:def-data}、Def.~\ref{s8:def-fibers}、Def.~\ref{s8:def-geoms} 及条件测度恒等式~\eqref{s8:eq:nu2} 为\textbf{第一类}（定义/精确恒等式），仅依赖 $\nu_1(S)>0$ 与标签可分离。
+\item 8.2 中关于 $\widehat G_1$"更稳定、更广覆盖"、8.3 中关于 $\widehat G_S$ 的方差量级 $\sim 1/n_2$，均为\textbf{第三类}（经验/可测诊断），其可证伪量见 Sec.~\ref{sec:biasvar}。
+\item 判据~\eqref{s8:eq:criterion}（Prop.~\ref{s8:prop-criterion}）为\textbf{第二类}（局部二阶近似）：它把 MSE 在 $G_S^*$ 附近作 bias$^2$+variance 的二阶展开，依赖几何度量 $\mathcal M$ 的局部固定、估计量在小邻域内近无偏、以及线性响应算子 $\cL_i$ 在 $\lambda_i$ 处的局部线性化有效；脱离这些假设，$b_{\mathrm{proj}}$ 与 $\Var(\widehat G_S)$ 的交叉项不再可忽略。
+\end{itemize}
+\end{remark}
+
+\begin{remark}[与工程直觉的对照]\label{s8:rem-engineering}
+回到工程语言：常见做法"阶段 1 学画风、阶段 2 学 SKADI"在本框架下被精确化为——阶段 1 同时给出全局几何 $G_1$ 与建立在 $\Rstr_S(G_1)$ 上的 SKADI 势能 $B_1^S$（8.2）；阶段 2 不是从零学 SKADI，而是\textbf{决定是否用子集几何 $\widehat G_S$ 修正阶段 1 的全集投影偏差}（8.3, Prop.~\ref{s8:prop-criterion}）。当 SKADI 与 $a_0$ 其余角色的二阶几何高度一致（$b_{\mathrm{proj}}$ 小）且子集样本 $n_2$ 偏少时，应\textbf{继承} $\Rstr_S(G_1)$；当 SKADI 在若干特异方向上明显偏离全集共享几何（$b_{\mathrm{proj}}$ 大）且 $n_2$ 充足时，应在那些方向上\textbf{重建} $\widehat G_S$。这把"画风/人物两步走"从一句操作口诀，提升为一个有判据、可测量、可分方向决策的几何修正问题。
+\end{remark}
+
+% ----- S9 (sec:fiber) -----
+\section{纤维继承与纤维重建的策略空间}\label{sec:fiber}
+
+本节把第二阶段对子集 $D_2=S\subsetneq D_1$ 的对齐决策，归结为一个在\textbf{纤维}（fiber）层面上的二选一：在第一阶段已建立的同一条纤维上继续推进势能（\emph{纤维继承}, inherit），还是借助子集自身的 COV 几何重建纤维（\emph{纤维重建}, rebuild）。这里“纤维”指由控制 $u_i$ 中的 $(\nu_i,T_i,\cH_i,M_i)$ 与全局几何 $G_i$ 经限制算子 $\Rstr_S$ 共同确定的、子集上的局部更新方向族；我们用形式参数 $c_S^{(i)}$ 标记第 $i$ 阶段在子集 $S$ 上实际采用的纤维（即中心化基准 $\Center_{i-1}$、限制 $\Rstr_S G_{i-1}$ 与可达子空间 $\cH_i$ 的联合配置）。继承对应 $c_S^{(2)}=c_S^{(1)}$，重建对应 $c_S^{(2)}\neq c_S^{(1)}$。
+
+\medskip
+为统一记号，约定子集上的目标势能为 $U_S^*(c,x,t)=\log\!\big[q_S^*(x|c)/p_{0,t}(x|c)\big]$，第一阶段在子集上遗留的累积势能为 $B_1^S(c,x,t)=B_1(c,x,t)\big|_{c\in T_2(S)}$，子集 COV 几何的样本估计为 $\widehat G_S$（由 $S$ 上的 posterior score covariance $\Sigma^D$ 经聚合得到），全局几何为 $G_1$。两种策略共享第一阶段训练所得的参数与全局先验，差别仅在于第二阶段残差 $\gres_2$ 的纤维基准与所信赖的几何来源。
+
+\subsection{纤维继承：$c_S^{(2)}=c_S^{(1)}$}
+
+继承策略保持第二阶段的纤维与第一阶段一致：中心化基准沿用 $\Center_1$（即对 $p_{1,t}(\cdot|c)$ 取条件期望），子集几何不重新估计，而是直接采用对全局先验 $G_1$ 的局部限制 $\Rstr_S G_1$，仅在必要处作一阶修正。于是第二阶段的势能残差为
+\begin{equation}\label{eq:s9:inherit_res}
+g_2^{(0)}=\Center_1\!\big[\,U_S^*-B_1^S\,\big],
+\qquad
+g_2^{(G)}=\Rstr_S G_1^*-\Rstr_S G_1 ,
+\end{equation}
+其中 $g_2^{(G)}$ 在继承下被压到很小：子集几何只在\emph{全局先验上被修正}，而非完全重估。复合残差 $\gres_2=(g_2^{(0)},\sqrt{\rho_G}\,g_2^{(G)})$ 因 $g_2^{(G)}$ 近零而主要由势能项 $g_2^{(0)}$ 主导。
+
+\begin{remark}[继承的代价与收益，第三类]\label{rem:s9:inherit}
+\eqref{eq:s9:inherit_res} 的结构给出如下经验性权衡（其量化均依赖可测诊断，故为第三类）：
+\begin{itemize}
+\item \textbf{收益。}（i）\emph{势能路径连续}：$B_2^S$ 由 $B_1^S$ 经同一纤维平滑推进，势能曲面无跳变；（ii）\emph{残差通常更小}：因 $B_1^S$ 已沿该纤维拟合过 $S$ 中的低频共现，$U_S^*-B_1^S$ 在该纤维上的范数一般小于从基模型出发的范数；（iii）\emph{方差低}：子集 COV 不被完全重估，避免了少样本下的 $\Var(\widehat G_S)$；（iv）\emph{先验强、优化压力低}：更新落在已验证的可达方向 $\cH_1$ 上。综括为\emph{低方差、低残差、强先验、低优化压力}。
+\item \textbf{代价。}（i）\emph{保留全局投影 bias}：$\Rstr_S G_1$ 把全局几何的投影偏差原样带入子集，凡全集对齐时引入的方向性偏差均被继承；（ii）\emph{势能绑定（potential binding）}：单一装束 / 固定低频共现会沿同一条纤维被\emph{再次强化}，即 $\Center_1$ 把第一阶段已锚定的低频结构当作基准，使其在第二阶段被进一步加固。综括为\emph{保留投影 bias $+$ 势能绑定}。
+\end{itemize}
+\end{remark}
+
+\subsection{纤维重建：$c_S^{(2)}\neq c_S^{(1)}$}
+
+重建策略仍共享第一阶段参数与全局几何 $G_1$，但更换纤维基准：中心化改以子集自身的条件期望为参照，几何更多依赖子集估计 $\widehat G_S$ 而非全局限制 $\Rstr_S G_1$。相应残差为
+\begin{equation}\label{eq:s9:rebuild_res}
+g_2^{(0)}=\Center_1\!\big[\,U_S^*-B_1^S\,\big],
+\qquad
+g_2^{(G)}=\widehat G_S-G_1 ,
+\end{equation}
+其中 $g_2^{(G)}$ 显著非零：它显式地把全局几何替换为子集几何，从而 $\sqrt{\rho_G}\,g_2^{(G)}$ 在 $\gres_2$ 中成为可观分量。注意势能项 $g_2^{(0)}$ 的\emph{书写}与 \eqref{eq:s9:inherit_res} 同形，但其作用纤维已改变：$U_S^*-B_1^S$ 被投影到由 $\widehat G_S$（而非 $\Rstr_S G_1$）诱导度量下的可达子空间，故两策略下 $g_2^{(0)}$ 的\emph{有效内容}并不相同。
+
+\begin{remark}[重建的代价与收益，第三类]\label{rem:s9:rebuild}
+\eqref{eq:s9:rebuild_res} 的结构给出对偶的权衡：
+\begin{itemize}
+\item \textbf{收益。}（i）\emph{低 bias}：用 $\widehat G_S$ 替换 $\Rstr_S G_1$ 可\emph{逃离糟糕的全局投影}，去除继承所背负的投影偏差；（ii）\emph{解除旧纤维绑定}：换纤维使第一阶段锚定的单一装束 / 低频共现不再被自动强化；（iii）\emph{上限更高}：若子集 COV 估计可靠（$\Var(\widehat G_S)$ 受控），重建可达到继承无法到达的目标 $U_S^*$。综括为\emph{低 bias、高上限、脱离旧绑定}。
+\item \textbf{代价。}（i）\emph{高方差}：子集样本少，$\Var(\widehat G_S)$ 大，几何估计噪声直接进入 $g_2^{(G)}$；（ii）\emph{不稳定}：高方差几何叠加更换纤维带来的更大势能落差，易诱发\emph{低频复述（recitation）、reward hacking、纹理漂移（texture drift）}；（iii）\emph{对可达性与数据质量敏感}：重建依赖 $\cH_2$ 是否覆盖 $\widehat G_S$ 指示的新方向，以及 $S$ 的覆盖与标注质量。综括为\emph{高方差、高残差、对 reachability 与数据质量敏感}。
+\end{itemize}
+\end{remark}
+
+\begin{caveat}[重建的隐含假设，第三类]\label{cav:s9:rebuild_assume}
+原讨论稿在“重建上限更高”处存在跳步：该结论只在 $\widehat G_S$ 为 $G_S^*$ 的\emph{相合且低方差}估计、且重建方向落入可达子空间 $\cH_2$（即 $\Rstr_S(G_S^*-G_1)\in\Range(\cH_2)$ 的限制内）时成立。若任一前提失效，则 \eqref{eq:s9:rebuild_res} 的 $g_2^{(G)}$ 主要承载估计噪声，重建非但不降 bias，反而以方差换得更差的期望残差能量。下一小节的判别式正是把这一前提显式化为可比较的标量。
+\end{caveat}
+
+\subsection{核心判别式：期望残差能量的二次型比较}
+
+两策略的取舍不应停留在定性描述，而应落到\textbf{期望残差能量}的标量比较上。沿用状态递推 $S_{i+1}=S_i+\eta_i\cL_i\gres_i+E_i$（其中 $E_i$ 为收集非线性、有限步优化与采样误差的误差项），一步更新后残留在状态空间中、未被线性响应算子 $\cL$ 吸收的残差为 $(\id-\eta\cL)\gres$；在度量算子 $Q\succeq 0$（由复合度量 $M_2$ 与几何权 $\rho_G$ 诱导的对称半正定的能量形）下，其期望能量定义为
+\begin{equation}\label{eq:s9:J}
+J \;=\; \E\big\langle (\id-\eta\cL)\,\gres,\; Q\,(\id-\eta\cL)\,\gres \big\rangle .
+\end{equation}
+此处 $\cL$ 为带 ridge 收缩 $\lambda_2$ 的\emph{线性响应算子}，并非投影；仅当 $\lambda_2\to0$、闭值域且度量固定时其极限才退化为正交投影 $\ProjectOp$（见 Sec.~\ref{sec:dualres}）。把 \eqref{eq:s9:inherit_res} 与 \eqref{eq:s9:rebuild_res} 的复合残差 $\gres_2$ 分别代入 \eqref{eq:s9:J}，得继承与重建两策略下的期望残差能量 $J_{\mathrm{inherit}}$ 与 $J_{\mathrm{rebuild}}$。
+
+\begin{proposition}[纤维继承/重建判别式，第三类]\label{prop:s9:discriminant}
+在 \eqref{eq:s9:J} 的期望残差能量准则下，选择重建当且仅当
+\begin{equation}\label{eq:s9:decision}
+\boxed{\;J_{\mathrm{rebuild}}<J_{\mathrm{inherit}}\;}
+\qquad(\text{第三类：经验假设 / 可测诊断}).
+\end{equation}
+等价地，设 $\Delta J:=J_{\mathrm{inherit}}-J_{\mathrm{rebuild}}$，则 $\Delta J>0$ 选重建，$\Delta J<0$ 选继承，$\Delta J=0$ 无差异。
+\end{proposition}
+
+\begin{remark}[判别式的语义分解]\label{rem:s9:decompose}
+\eqref{eq:s9:decision} 把第 9.1、9.2 节的定性权衡浓缩为单一标量比较，其语义可按 Sec.~\ref{sec:biasvar} 的 bias--variance 分解读出。两策略仅在几何残差项 $g_2^{(G)}$ 上本质不同（继承为 $\Rstr_S G_1^*-\Rstr_S G_1$，重建为 $\widehat G_S-G_1$），故 $\Delta J$ 大致由三股力量的代数和决定：
+\begin{itemize}
+\item \textbf{bias 降低（利重建，使 $\Delta J>0$）}：重建用 $\widehat G_S$ 替换 $\Rstr_S G_1$，消去全局投影偏差在 $Q$-度量下贡献的那部分确定性残差能量；
+\item \textbf{variance 增加（利继承，使 $\Delta J<0$）}：$\E\langle\cdot,Q\,\cdot\rangle$ 中的期望把 $\Var(\widehat G_S)$ 经 $(\id-\eta\cL)$ 传播后计入 $J_{\mathrm{rebuild}}$，少样本下此项膨胀；
+\item \textbf{reachability 损失 $+$ 额外势能高度（利继承，使 $\Delta J<0$）}：若重建方向部分落在 $\cH_2$ 之外，$(\id-\eta\cL)$ 无法将其压缩，残留能量上升；同时换纤维带来的势能落差（$U_S^*-B_1^S$ 在新纤维下范数增大）抬高 $g_2^{(0)}$ 的贡献。
+\end{itemize}
+因此判别式 $J_{\mathrm{rebuild}}<J_{\mathrm{inherit}}$ 的直白读法是：\emph{当且仅当重建所降的 bias 能量，超过它所引入的 variance、reachability 损失与额外势能高度之和时，才应重建}。该判据为第三类，因为 $J_{\mathrm{inherit}},J_{\mathrm{rebuild}}$ 均须经 $\widehat G_S$、$\Var(\widehat G_S)$ 与 $\cH_2$ 覆盖度等可测诊断估计，而非无条件成立的恒等式（其估计方法见 Sec.~\ref{sec:diagnostics}）。
+\end{remark}
+
+% ----- S10 (sec:strategies) -----
+\section{单步与多步策略分类}\label{sec:strategies}
+
+本节给出的是一个\textbf{条件性分类}：下表所列每条策略都附带其适用前提、收益方向与失效风险，\emph{不构成任何无条件推荐}。是否选用某条策略，取决于该场景下可测的样本量、全集到子集的投影偏差、可达性（即响应算子 $\cL_i$ 的谱）、势能残差幅度与终端目标，这些量在不同数据配置下取值不同，因而不存在跨配置的全序最优（参见 Sec.~\ref{sec:case} 与 Sec.~\ref{sec:propositions} 中的 fiber 策略无条件最优否定结果）。本节属于 \textbf{第三类}（经验假设 / 可测诊断量）：表中“收益”“风险”是对状态递推 $S_{i+1}=F_i(S_i,u_i)$ 各分量定性走向的归纳，其严格化形式见 Sec.~\ref{sec:diagnostics} 的判别条件，此处不充当定理。
+
+\begin{caveat}\label{rem:s10:nonorder}
+表~\ref{tab:s10:strategies} 的“收益”“风险”两列描述的是各策略在\emph{典型参数区间}内对偏差、方差、可达性与势能残差的影响方向，而非可比较的标量。任意两条策略的优劣只有在固定控制 $u_i=(\nu_i,T_i,\gamma_i,\Phi_i^\dagger,\cH_i,M_i,\lambda_i,\eta_i)$ 与数据规模后，经 Sec.~\ref{sec:diagnostics} 的诊断量代入才能判定；脱离这些前提的横向排序无定义。
+\end{caveat}
+
+\begin{table}[htbp]
+\centering
+\caption{单步与多步对齐策略的条件性分类（第三类）。}\label{tab:s10:strategies}
+\small
+\begin{tabular}{@{}p{0.20\textwidth}p{0.22\textwidth}p{0.27\textwidth}p{0.27\textwidth}@{}}
+\toprule
+\textbf{策略} & \textbf{数据结构} & \textbf{收益} & \textbf{风险} \\
+\midrule
+单步：单画师 $+$ SKADI $+$ 多衣服
+& $A$ 固定，$P$ 固定，$W$ 多样
+& 势能集中于单一人物子点、衣服可辨识；样本充足时上限高
+& 多衣服素材不足时不可用；样本少时 $\COV$ 估计方差高 \\
+\addlinespace
+单步：单画师 $+$ 多角色
+& $A$ 固定，$P$ 多样（含 SKADI）
+& 全局画风 $\COV$ 几何 $G_i$ 稳定、纹理估计更好
+& SKADI 单点势能被混合稀释；人物 residual $R$ 更复杂 \\
+\addlinespace
+单步：多画师 $+$ 多角色
+& $A/P/W$ 全多样
+& 覆盖全面、上限高
+& 各子场 $\COV$ 方向可能相悖；大合集常因异质 $\COV$ 在 $\cH_i$ 中不可达而被平均化 \\
+\addlinespace
+两步：先人物后画风
+& 先建低频人物势能，再做画风几何迁移
+& 先锁定对象、后抬升局部地基
+& 第二步局部场估计偏差大时，势能线性叠加近似失效 \\
+\addlinespace
+两步：先画风后人物
+& $D_1=$ 单画师多人物，$D_2=$ SKADI 真子集（$D_2\subsetneq D_1$）
+& 先稳定全局 $\COV$ 并在其上建子点势能 $B_1^S$，再做子集校正
+& 继承 / 重建 fiber 的 bias--variance 选择是核心 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+对表中关键判断作三点澄清，以避免逻辑跳步：
+
+\begin{itemize}
+  \item 第三行“被平均化”不是经验描述而有几何根源：当多画师 / 多角色 / 多衣服的条件 score $s_y$ 方向冲突时，其后验 score covariance $\Sigma_i^D=\Cov_{\alpha_i}(s_Y)$ 各向异性增大；若这些主方向落在 LoRA 可达子空间 $\cH_i$ 之外（即 $\cL_i$ 在该方向上谱值趋零），则训练无法分辨地写入，残差被压成各子场的平均。
+  \item 第四行“线性叠加近似失效”指的是：把第二步的势能更新近似为在第一步势能上叠加 $\eta_i\,\cL_i\,\gres_i$ 这一线性响应步，仅在小步长、局部、$\cL_i$ 近似为定度量响应时成立；当局部场 $\Sigma_i^{\mathrm{loc}}(z)=\Rstr_z(G_i)$ 的估计偏差大时该线性化前提被破坏（见下方 caveat~\ref{rem:s10:linear}）。
+  \item 第五行的“子集校正”即 Sec.~\ref{sec:case} 与 Sec.~\ref{sec:fiber} 所述：第一步已在全集几何投影 $\Rstr_S(G_1)$ 上为 SKADI 子点建立 $B_1^S$，第二步的真正决策是继承同一 fiber（低方差、保留投影偏差）还是用真子集重建 fiber（低偏差、高方差）。
+\end{itemize}
+
+\begin{caveat}\label{rem:s10:linear}
+“两步：先人物后画风”一行的风险陈述依赖一个被原稿隐去的前提：势能的两步叠加被当作线性响应。严格地，$S_{i+1}=S_i+\eta_i\,\cL_i(S_i,u_i)\,\gres_i+E_i$ 中的余项 $E_i$ 仅在局部二阶近似下可忽略（第二类）。若先建人物势能后做画风迁移时，第二步对局部场 $\Sigma_i^{\mathrm{loc}}(z)=\Rstr_z(G_i)$ 的估计偏差较大，则 $\cL_i$ 不再近似为固定度量下的响应，$E_i$ 不可忽略，线性叠加图景失效。此即该顺序的特有风险来源。
+\end{caveat}
+
+\subsection{为什么大合集 LoRA 常失败}\label{subsec:s10:bigset}
+
+更多画师、更多角色、更多衣服并不自动让 $\COV$ 几何更稳定。这里有两股相反的力：一方面样本增多降低估计的 sampling variance；另一方面数据更异质会抬高内禀的 $\COV$ 冲突。当不同画师 / 角色 / 衣服的 score 方向在当前 LoRA 可达子空间 $\cH_i$ 中相互抵触、且这些方向 $\cL_i$ 写不进去时，训练只能落到各方向的平均，表现为纹理糊化、细节丢失或错误绑定。其逻辑链为三行（第三类）：
+
+\begin{equation}\label{eq:s10:bigset}
+\boxed{
+\begin{aligned}
+&\text{更多数据}\;\Longrightarrow\;\text{更低的 sampling variance};\\
+&\text{更异质的数据}\;\Longrightarrow\;\text{可能更高的内禀 }\COV\text{ conflict};\\
+&\text{成功要求}\;\COV\text{ 方向在 }\cH_i\text{ 中可达对齐（reachable alignment）}.
+\end{aligned}}
+\end{equation}
+
+\begin{remark}\label{rem:s10:bigset}
+式~\eqref{eq:s10:bigset} 是\textbf{第三类}经验诊断而非定理：三行各自对应一个可测量——sampling variance 可由重采样估计，内禀 $\COV$ conflict 可由后验 score covariance $\Sigma_i^D$ 的各向异性度量，reachable alignment 可由 $\cL_i$（或其在目标方向上的谱投影）刻画。它解释的是“大合集 LoRA 常失败”这一经验现象的来源，而非断言其必然失败：当异质 $\COV$ 的主方向恰好落入 $\cH_i$ 且彼此不相悖时，大合集反而上限更高（参见表~\ref{tab:s10:strategies} 第三行的“收益”列与 Sec.~\ref{sec:diagnostics} 的可达性诊断）。前两行的“相反力”是否净为负，须由具体诊断量代入判定，不可无条件下结论。
+\end{remark}
+
+% ----- S11 (sec:llm) -----
+\section{推广到 LLM 与一般任务}\label{sec:llm}
+
+前面各节的状态递推 $S_{i+1}=F_i(S_i,u_i)=S_i+\eta_i\,\cL_i(S_i,u_i)\,\gres_i(S_i,u_i)+E_i$ 及其全集--真子集张力（见 Sec.~\ref{sec:case} 的先画风后人物案例、Sec.~\ref{sec:strategies} 的纤维继承/重建策略空间）是在图像 / Flow Matching 语境中显式建立的。本节说明：该结构\textbf{并非}角色画风 LoRA 专属，而是任何"全集对齐之后再对真子集对齐"任务的共性。推广的代价与限度必须逐项交代——LLM 与 FM 在\emph{潜变量记号}与\emph{COV 几何的显式性}上有实质差异，照搬恒等式会越界。本节所有断言均为\textbf{第三类}（结构类比 / 经验假设）：它们指出"同构"，但同构是否真的成立须由可测诊断量在具体数据、架构、训练机制下检验，而非由推导保证。
+
+\subsection{潜变量与几何的对应映射}
+
+回顾图像潜变量 $y=(A,P,W,R)$（$A$ 风格/画师/域，$P$ 角色/实体，$W$ 可控属性/服饰，$R$ residual 视觉因子）。把它逐分量替换为 LLM / 一般任务中的对应对象，即得同一形式框架。注意：原讨论稿把 LLM 侧列为"领域、任务、风格、用户群、问题类型、偏好类型"六项，比图像侧的四个分量多；这是因为图像侧的可控属性槽 $W$ 与 residual 槽 $R$ 在 LLM 中各自分裂为两类可观测维度。下表给出严格的多对一/一对多对应，而非逐字一一对应。
+
+\begin{center}
+\begin{tabular}{@{}lll@{}}
+\toprule
+潜变量分量 & 图像语义 & LLM / 一般任务语义 \\
+\midrule
+$A$ & 画师 / 风格 / 域 & 领域（domain）：知识域、语料源、行业 \\
+$P$ & 角色 / 实体 & 任务类型（task）/ 问题类型（question-type）：指令族、技能 \\
+$W$ & 可控属性 / 服饰 & 风格 / 用户群（style / user-group）：语气、人格、受众 \\
+$R$ & residual 视觉因子 & residual 偏好因子（preference-type）：答案细节、格式、未标注偏好 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{remark}[映射的层级]\label{rem:s11:map-tier}
+该对应是一个\textbf{建模选择}，不是恒等式。它声明"存在一个潜变量分解 $y=(A,P,W,R)$ 与标签映射 $T_i:y\mapsto c$，使 LLM 阶段数据测度 $\nu_i(dy)$、条件 fiber $\nu_i(dy\mid c)$ 与图像侧同构"。该声明成立的前提是：LLM 任务确有可分离的领域/任务/风格/偏好结构，且训练 caption（system prompt、task tag、preference label）确实落在 $T_i$ 的像中。前提不满足时（例如域与任务在数据中纠缠不可分），下表的分量对应退化，但全集--真子集的偏差--方差结构仍可在不分解 $y$ 的粗粒度上成立。此为\textbf{第三类}。
+\end{remark}
+
+\subsection{两阶段结构的同构}
+
+在上述映射下，全集--真子集两阶段对齐写成与图像侧完全相同的控制问题。设 $D_2=S\subsetneq D_1$，$\nu_2(dy)=\nu_1(dy\mid y\in S)=\mathbf{1}_S\,\nu_1/\nu_1(S)$，则
+\begin{align}
+\text{Stage 1（全集对齐）:}\quad & \text{在 } D_1 \text{ 上做全局 RLHF / SFT}\;\Rightarrow\; S_1=(B_1,G_1), \label{eq:s11:stage1}\\
+\text{Stage 2（子集对齐）:}\quad & \text{在 } D_2 \text{ 上对齐}\;\Rightarrow\; \text{继承（inherit）或重建（rebuild）fiber}. \label{eq:s11:stage2}
+\end{align}
+其中 $B_1$ 为累计势能状态，$G_1\in\cG$ 为全局几何状态。与图像侧一致，Stage 1 在全集几何上同时为 $D_2$ 中的子点建立了势能估计 $B_1^S$（即 $B_1$ 限制到 $S$ 上的分量，建立在投影 $\Rstr_S(G_1)$ 之上）；Stage 2 的真正决策不是"是否继续训练"，而是 \eqref{eq:s11:stage2} 中的继承/重建二选一。这与 Sec.~\ref{sec:dualres}--\ref{sec:strategies} 建立的判别完全平行：继承对应低方差、低残差、保留全集投影偏差；重建对应低偏差、高方差、上限更高但对可达性与数据质量更敏感。
+
+\begin{remark}[LLM 中"重建 fiber"的工程对应]\label{rem:s11:engineering}
+图像侧"继承同一 SKADI fiber 还是换一条 fiber"的抽象选择，在 LLM 工程中有直接对应：第二阶段是否\textbf{沿用}原有的 task tag、reward head 或 adapter route。沿用同一条件路径即继承（$c_S^{(2)}=c_S^{(1)}$），换新 task tag / 新 reward head / 新 adapter / 重定义对齐路线即重建（$c_S^{(2)}\neq c_S^{(1)}$）。因此"是否复用任务标签 / reward head / adapter route"本质上\emph{就是}继承--重建抉择的工程外化，受同一组诊断量（见 Sec.~\ref{sec:diagnostics}：全集投影偏差 $\|\Rstr_S(G_1)-G_S^*\|$、子集估计方差 $\Var(\widehat G_S)$、势能残差 $\|\Center[U_S^*-B_1^S]\|$、可达性 $\cL_i$ 之谱或 $\chi_k$）支配。此为\textbf{第三类}（可测诊断，非无条件定理）。
+\end{remark}
+
+\subsection{LLM 中的几何状态 $G$}
+
+图像侧 $G_i$ 是 posterior score covariance / 数据场协方差几何，并通过 $\Rstr_z(G_i)=\Sigma_i^{\mathrm{loc}}(z)$ 给出局部二阶形式（见 Sec.~\ref{sec:cov} 的 Hessian 分解 $\nabla_x^2\log q_{i,t}^D=\E_{\alpha_i}[H_Y]+\Sigma_i^D$）。在 LLM 中，几何状态 $G_i\in\cG$ 可由下列任一对象实例化：
+\begin{itemize}
+\item 语义特征共现几何（semantic co-occurrence geometry）：token / 概念在条件 fiber 下的二阶共现结构；
+\item 偏好 reward manifold：reward 模型在回答空间上诱导的曲率流形；
+\item 任务分布场（task-distribution field）：指令族在表示空间中的协方差几何；
+\item 指令--回答映射的局部曲率（instruction--answer local curvature）；
+\item 领域知识图谱的 posterior covariance（domain-KG posterior covariance）。
+\end{itemize}
+
+\begin{caveat}[COV 几何的显式性差异：勿照搬 Hessian 恒等式]\label{cav:s11:explicit}
+图像 / FM 的关键便利是：数据场是\emph{连续}状态 $x\in\R^d$ 上的密度，故 COV 几何\textbf{显式}地以 score Hessian 的形式出现——
+\[
+\nabla_x^2\log q_{i,t}^D(x\mid c)=\E_{\alpha_i}[H_Y(x,t)]+\Sigma_i^D(x,t\mid c),\qquad
+\Sigma_i^D=\Cov_{\alpha_i}(s_Y),
+\]
+这是\textbf{第一类}恒等式（见 Sec.~\ref{sec:cov}），其成立依赖 $x$ 连续、$q_t(x\mid y)$ 二阶可微、posterior responsibility $\alpha_i$ 良定义。LLM 的生成对象 $z=(c,y)$ 是 token 序列上的\emph{离散}对象，不存在 $\nabla_x^2\log q_t$，故该 Hessian 分解\textbf{不能}逐字搬运：LLM 中 COV 几何是\emph{隐含的}（结构上同型，但没有现成的二阶导数恒等式承载它）。要在 LLM 中复现"显式 COV"，须先固定一个连续表示（如末层 hidden state 或 reward 模型的连续 score）并在其上引入平滑核 $K_t$，才能谈 score、Hessian 与 posterior cumulant；否则 $G_i$ 只能作为\emph{抽象几何状态}使用，其 $\Rstr_z$ 投影、$g_i^{(G)}=G_i^*-G_{i-1}$ 残差、以及对局部景观的影响均退为\textbf{第三类}（结构假设），其量化须经可测诊断而非恒等式。这是 FM 与 LLM 在本框架内最重要的一处错配，必须显式声明而非以"结构相同"掩盖。
+\end{caveat}
+
+\begin{remark}[离散侧的绝对连续性反而更好]\label{rem:s11:abscont}
+须指出一处方向相反的差异：累计势能 $B_i(c,x,t)=\log[p_{i,t}(x\mid c)/p_{0,t}(x\mid c)]$ 的良定义依赖绝对连续性 $p_{i}\ll p_{0}$。在 LLM 中 $z=(c,y)$ 为 token 序列上的计数测度，绝对连续性\textbf{自动}成立，故势能残差 $g_i^{(0)}=\Center_{i-1}[U_i^*-B_{i-1}]$ 与残差 reward 恒等式 $R_i/\beta_i=U_i^*-B_{i-1}$（见 Sec.~\ref{sec:potential}）在 LLM 中作为\textbf{第一类}恒等式比连续图像空间更稳健——后者需借公共参考测度或平滑边缘才良定义。换言之：\emph{势能侧}在 LLM 中更干净，\emph{几何侧}在 LLM 中更隐含。两侧的层级在跨域时并不同步迁移。
+\end{remark}
+
+\subsection{一般化结论}
+
+综合以上，得到本框架的最终一般化命题。
+
+\begin{proposition}[全集--真子集张力的普遍性]\label{prop:s11:universality}
+设任一任务满足：（i）存在真子集关系 $D_2\subsetneq D_1$；（ii）先在全集 $D_1$ 上对齐得到状态 $S_1=(B_1,G_1)$，再在真子集 $D_2$ 上对齐。则该任务必然面临\textbf{低方差全集几何}与\textbf{高方差子集几何}之间的同一抉择：
+\[
+\boxed{\;\Rstr_S(\widehat G_1)=G_S^*+\epsilon_{\mathrm{proj}}+\epsilon_{\mathrm{stat}}^{(D_1)},\qquad
+\widehat G_S=G_S^*+\epsilon_{\mathrm{stat}}^{(S)},\quad
+\text{且 }\ \Var(\widehat G_S)\gtrsim \Var(\Rstr_S(\widehat G_1)),\ \ \|\epsilon_{\mathrm{proj}}\|\ \text{可观}.\;}
+\]
+继承全集 fiber 承接 $\Rstr_S(\widehat G_1)$（低方差、含投影偏差 $\epsilon_{\mathrm{proj}}$）；重建子集 fiber 改用 $\widehat G_S$（无投影偏差、统计方差 $\epsilon_{\mathrm{stat}}^{(S)}$ 更高）。何者更优由偏差--方差--可达性--势能残差--终端目标共同决定，不存在无条件全序最优（与 Sec.~\ref{sec:case}、Sec.~\ref{sec:propositions} 的子集偏差--方差分解一致）。
+\end{proposition}
+
+\begin{remark}[命题 \ref{prop:s11:universality} 的说明（非证明，第三类）]\label{rem:s11:universality-note}
+偏差--方差分解 $\Rstr_S(\widehat G_1)=G_S^*+\epsilon_{\mathrm{proj}}+\epsilon_{\mathrm{stat}}^{(D_1)}$ 与 $\widehat G_S=G_S^*+\epsilon_{\mathrm{stat}}^{(S)}$ 是 Sec.~\ref{sec:propositions} 中已建立的（在那里 $G$ 的具体实例为图像 COV 几何）。本命题仅断言：只要 $G$ 是\emph{某个}可由数据估计、可由全集向子集投影 $\Rstr_S$ 限制的几何状态，上述分解的代数形式与方差排序 $\Var(\widehat G_S)\gtrsim\Var(\Rstr_S(\widehat G_1))$（因 $|S|<|D_1|$，子集样本更少）即成立，与 $G$ 取语义共现几何、reward manifold、任务分布场还是 KG posterior covariance 无关。代数成立；但每一项的\emph{量值}（$\|\epsilon_{\mathrm{proj}}\|$ 是否真大、$\Var(\widehat G_S)$ 是否真高到淹没偏差收益）是经验量，须由 Sec.~\ref{sec:diagnostics} 的诊断量测得。故本命题为结构性（第三类），不是无条件定理。
+\end{remark}
+
+\begin{theorem}[FM--LLM 同构与其限度]\label{thm:s11:isomorphism}
+在映射 Rem.~\ref{rem:s11:map-tier}、两阶段结构 \eqref{eq:s11:stage1}--\eqref{eq:s11:stage2} 与几何实例化之下，图像 / FM 的全集--真子集对齐与 LLM / 一般任务的全集--真子集对齐\textbf{在状态递推 $S_{i+1}=F_i(S_i,u_i)$ 的层面同构}。二者的唯一结构差异在于 COV 几何的显式性：
+\[
+\boxed{\;
+\text{FM：COV 显式出现在 score Hessian }\nabla_x^2\log q_{i,t}^D=\E_{\alpha_i}[H_Y]+\Sigma_i^D\ \text{（第一类恒等式）};\quad
+\text{LLM：COV 隐含，结构同型但无现成二阶恒等式（第三类假设）}.
+\;}
+\]
+\end{theorem}
+
+\begin{caveat}[同构是结构层面的，不是恒等式层面的]\label{cav:s11:tier}
+Thm.~\ref{thm:s11:isomorphism} 的"同构"必须严格读作\textbf{第三类}：它断言两域共享同一控制结构（同一状态空间 $\cS=\cB\times\cG$、同一递推算子族、同一继承/重建抉择），\emph{不}断言图像侧的第一类恒等式（Hessian 分解、残差 reward）在 LLM 侧自动升级为恒等式。正确的层级迁移规则是：势能侧恒等式（$R_i/\beta_i=U_i^*-B_{i-1}$、fiberwise centering $\Center_{i-1}$）因离散绝对连续性而\emph{保持第一类}（Rem.~\ref{rem:s11:abscont}）；几何侧 COV 结构因缺连续表示而\emph{降为第三类}（Cav.~\ref{cav:s11:explicit}）；一切"某策略更优"的判断在两域中\emph{同为第三类}，落到可测诊断量。把本节同构当作"LLM 中也有显式 score-Hessian COV 恒等式"来引用，即构成 over-claiming。
+\end{caveat}
+
+% ----- S12 (sec:diagnostics) -----
+\section{可测诊断量、判别条件与失败模式}\label{sec:diagnostics}
+
+本节把前文（见 Sec.~\ref{sec:control} 的复合二次型最优控制、Sec.~\ref{sec:cov} 的 Hessian / COV 分解、Sec.~\ref{sec:dualres} 的双残差结构）所建立的全部判别量收束为一组\textbf{可测诊断}：每一个量都可由当前阶段的模型、数据与训练机制直接估计，从而把“继承第一阶段 fiber 还是用真子集重建 fiber”这一决策落实到数字上，而非无条件定理。本节所有诊断量与判别条件整体标注为\textbf{第三类}（empirical assumption / measurable diagnostic）：它们的\emph{定义}多数来自前文的第一类恒等式或第二类局部展开，但其作为“应继承 / 应重建 / 已失败”之\textbf{阈值判据}的使用，依赖经验校准，须由实验确定阈值与权重，故合并降级为第三类。
+
+\begin{remark}[本节的层级约定]\label{rem:s12:tier}
+表~\ref{tab:s12:diag} 中各诊断量的解析形式继承自其在前文的精确或近似定义；本节不重新证明这些定义。本节新增的内容是：将这些量组织成一个判别系统，并据此刻画失败模式。该“判别 + 失败模式”系统作为整体是第三类——它给出\emph{可测}的告警信号，但把信号映射为决策的函数（阈值、单调合成）须经验校准。凡引用前文近似处，已在相应行注明其原始层级。
+\end{remark}
+
+\subsection{诊断量总表}\label{ssec:s12:table}
+
+设第一阶段（全集 $D_1$）训练完成后得到状态 $S_1=(B_1,G_1)$，第二阶段目标针对真子集 $S\subsetneq D_1$（即 $D_2=S$，$\nu_2(dy)=\mathbf{1}_S\,\nu_1/\nu_1(S)$）。记 $G_S^*$ 为真子集上的目标全局 COV / posterior-cumulant 几何，$U_S^*$ 为子集目标势能，$B_1^S$ 为第一阶段在子集 fiber 上继承下来的累积势能，$S^*$ 为终端目标复合状态。表~\ref{tab:s12:diag} 列出六个核心诊断量。
+
+\begin{table}[ht]
+\centering
+\caption{真子集对齐的可测诊断量（全部第三类：作为判据须经验校准）}\label{tab:s12:diag}
+\begin{tabular}{@{}lll@{}}
+\toprule
+诊断量 & 形式 & 解释 \\
+\midrule
+全集投影偏差 & $\|\Rstr_S(G_1)-G_S^*\|$ & 全集几何投影到子集后是否歪 \\
+子集估计方差 & $\Var(\widehat{G}_S)$ & 真子集几何是否不稳 \\
+势能残差 & $\|\Center[U_S^*-B_1^S]\|$ & 继承状态下子集还差多少 \\
+可达性 & $\cL_i$ 的谱 / $\chi_k$ & 目标方向当前训练机制能否写入 \\
+重复写入强度 & $\mathrm{mass}(S\subset D_1)+\mathrm{mass}(S\subset D_2,\ \text{same fiber})$ & 真子集是否被同一路径二次加权 \\
+终端误差 & $D_T(S_N,S^*)$ & 最终目标是否达成 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+各量的读法如下。
+
+\begin{itemize}
+\item \textbf{全集投影偏差} $\;\beta_{\mathrm{proj}}:=\|\Rstr_S(G_1)-G_S^*\|$。\;
+此处 $\Rstr_S:\cG\to\cG$ 是把全局几何状态限制到子集 fiber 的 restriction 算子（见 Sec.~\ref{sec:cov} 的 $\Rstr_z,\Rstr_S$ 定义）。$\beta_{\mathrm{proj}}$ 小，说明把全集学到的几何直接投影到 $S$ 上与真子集目标几何吻合，\emph{继承}是廉价且无偏的；$\beta_{\mathrm{proj}}$ 大，说明全集几何对 $S$ 存在系统性偏置（bias），继承会把这种歪带进第二阶段。该量的定义为第一类（给定 $G_1,G_S^*$ 后由范数确定），但 $G_S^*$ 通常需估计，故实际使用时含估计误差。
+
+\item \textbf{子集估计方差} $\;\sigma_{\mathrm{sub}}^2:=\Var(\widehat{G}_S)$，其中 $\widehat{G}_S$ 是仅用真子集样本对 $G_S$ 的估计。\;
+$\sigma_{\mathrm{sub}}^2$ 度量真子集自身重建几何的统计稳定性。$|S|$ 小或 fiber 内样本覆盖稀疏时 $\sigma_{\mathrm{sub}}^2$ 大，重建几何不可靠。这与 $\beta_{\mathrm{proj}}$ 构成经典的 bias--variance 权衡：继承吃 $\beta_{\mathrm{proj}}^2$ 的偏差、省方差；重建吃 $\sigma_{\mathrm{sub}}^2$ 的方差、去偏差（其形式化的最优折中见 Sec.~\ref{sec:biasvar}）。
+
+\item \textbf{势能残差} $\;r_U:=\|\Center[U_S^*-B_1^S]\|$。\;
+$\Center=\Center_{i-1}$ 是 fiberwise centering 算子 $\Center_{i-1}[f](c,x)=f(c,x)-\E_{p_{i-1,t}(\cdot|c)}[f(c,X)]$（消去与 caption 同变的常数偏移，只保留可由训练写入的“形状”分量）。$r_U$ 度量在继承第一阶段几何状态的前提下，子集目标势能 $U_S^*$ 相对已继承势能 $B_1^S$ 还差多少。$r_U$ 即复合残差中势能分量 $g_i^{(0)}=\Center_{i-1}[U_i^*-B_{i-1}]$ 在子集上的实例化（见 Sec.~\ref{sec:dualres}），其作为残差的定义为第一类。
+
+\item \textbf{可达性} $\;\mathrm{Reach}:=\mathrm{spec}(\cL_i)\ \text{与方向级系数}\ \chi_k\in[0,1]$。\;
+$\cL_i$ 是带岭收缩 $\lambda_i$ 的\textbf{线性响应算子}（ridge-regularized linear response operator），\emph{不是}投影；仅在 $\lambda_i\to0$、闭值域、固定 metric 的极限下其行为退化为正交投影 $\ProjectOp$（见 Sec.~\ref{sec:control}）。$\cL_i$ 的谱刻画各方向被一步更新放大/衰减的比率；方向级可达性 $\chi_k$ 把“第 $k$ 个目标方向能否被当前训练机制写入”量化到 $[0,1]$，受数据覆盖、LoRA rank、target modules、NTK/Fisher 谱、metric $M_i$ 与 $\lambda_i$ 共同影响。$\chi_k\approx0$ 的方向，无论残差多大都写不进去——这是\emph{机制性}约束，不靠加大步长 $\eta_i$ 解决。
+
+\item \textbf{重复写入强度} $\;w_{\mathrm{rep}}:=\mathrm{mass}(S\subset D_1)+\mathrm{mass}(S\subset D_2,\ \text{same fiber})$。\;
+真子集 $S$ 既在第一阶段作为 $D_1$ 的一部分被训练过，又在第二阶段作为 $D_2$ 被训练；若两次落在\emph{同一} fiber（同一 $T_i$ 标签路径），则 $S$ 沿同一方向被二次加权。$w_{\mathrm{rep}}$ 大意味着该 fiber 的有效学习率被隐式放大，是低频背诵（memorization）与过度集中的早期指标。该量为可直接由数据计数得到的第三类诊断。
+
+\item \textbf{终端误差} $\;D_T(S_N,S^*)$。\;
+在复合状态空间 $\cS=\cB\times\cG$ 上的终端距离（$D_T$ 为该空间上选定的二次型 / Bregman 型偏差度量，见 Sec.~\ref{sec:control}），度量经过 $N$ 步递推后的状态 $S_N$ 与终端目标 $S^*$ 的差距。这是唯一直接对应“最终目标是否达成”的量；前五个诊断是过程量，$D_T(S_N,S^*)$ 是结果量。注意 $D_T$ 同时含势能分量 $B$ 与几何分量 $G$，故“几何对齐”不蕴含“终端对齐”——这一点在下节失败模式 (iv) 中关键。
+\end{itemize}
+
+\begin{remark}[判别条件的合成]\label{rem:s12:decision}
+继承 vs.\ 重建的判别可写为：当 $\beta_{\mathrm{proj}}^2\lesssim\sigma_{\mathrm{sub}}^2$ 且 $r_U$ 小且目标方向 $\chi_k$ 充分时，\textbf{继承}（吃小偏差、省方差、残差可写入）；当 $\beta_{\mathrm{proj}}^2\gtrsim\sigma_{\mathrm{sub}}^2$ 且 $\sigma_{\mathrm{sub}}^2$ 可控时，\textbf{重建}（去掉系统性投影偏差）。该合成规则中的“$\lesssim$”阈值与各量权重为经验校准对象，故整条规则为第三类。其 bias--variance 形式化基础见 Sec.~\ref{sec:biasvar}。
+\end{remark}
+
+\subsection{失败模式}\label{ssec:s12:failure}
+
+下列失败模式各对应表~\ref{tab:s12:diag} 中某一诊断越界而仍执行错误决策的后果。每一条均给出触发该模式的诊断签名，使其可测、可预警。
+
+\begin{itemize}
+\item[(i)] \textbf{投影偏差大仍继承 $\Rightarrow$ 稳定但错误绑定。}\;
+诊断签名：$\beta_{\mathrm{proj}}=\|\Rstr_S(G_1)-G_S^*\|$ 大，却因 $\sigma_{\mathrm{sub}}^2$ 大（子集样本少）而选择继承。结果：训练在数值上稳定（方差小、loss 平滑），但子集几何被锁定到全集的歪投影上，形成\emph{稳定的错误绑定}——caption 与目标几何之间建立了一致但偏置的对应。表现为子集内细类被全集主导风格“拉平”，且因稳定性高而难以察觉。
+
+\item[(ii)] \textbf{子集方差大强行重建 $\Rightarrow$ 低频背诵 / reward hacking / 纹理漂移。}\;
+诊断签名：$\sigma_{\mathrm{sub}}^2=\Var(\widehat{G}_S)$ 大（且常伴 $w_{\mathrm{rep}}$ 大），却强行用真子集重建 fiber。结果：在样本不足的几何上拟合高频细节，触发三类典型病态——\emph{低频背诵}（模型记住少数样本的低频结构而非泛化）、\emph{reward hacking}（沿被二次加权的同一 fiber 把 reward $R_i$ 推高而不改善真实目标）、以及\emph{纹理漂移}（高方差方向上的几何估计随训练步漂移，纹理统计逐步偏离目标）。$w_{\mathrm{rep}}$ 大会放大全部三者，因为同一路径的二次加权进一步抬高有效学习率。
+
+\item[(iii)] \textbf{可达性不足 $\Rightarrow$ 细节学不到 / 被平均化。}\;
+诊断签名：目标方向上 $\chi_k\approx0$，或 $\cL_i$ 在该方向谱值近零（$\mathrm{spec}(\cL_i)$ 在该方向附近趋零）。结果：无论残差 $r_U$ 多大、步长 $\eta_i$ 多大，目标方向都写不进当前训练机制（LoRA rank 不足、target modules 未覆盖、metric $M_i$ 或岭 $\lambda_i$ 压制了该方向）。细节学不到，残差被投影到可达子空间后\emph{被平均化}到邻近可达方向，表现为目标特征“糊掉”。此模式不能靠加大 $\eta_i$ 修复，须改 control $u_i$ 中的 $\cH_i$（LoRA / target modules）或 $\lambda_i,M_i$。
+
+\item[(iv)] \textbf{终端势能未对齐 $\Rightarrow$ 几何看似改善但推理不指向目标。}\;
+诊断签名：几何分量距离小（$\|\Rstr_S(G_N)-G_S^*\|$ 已降），但终端误差 $D_T(S_N,S^*)$ 的势能分量大（即 $r_U$ 未收敛）。结果：COV / 几何状态看似已对齐，采样几何“像”目标，但累积势能 $B_N$ 未对齐 $U_S^*$，故条件分布的众数 / 推理方向不指向真子集目标。表现为“风格 / 结构对、内容 / 语义错”。根因是 $S=(B,G)$ 两分量须\emph{联合}对齐，单看 $G$ 会漏掉 $B$。
+
+\item[(v)] \textbf{局部贪心 $\Rightarrow$ 每步 loss 好看但破坏未来结构、多步总目标下降。}\;
+诊断签名：单步 $\eta_i\,\cL_i\,\gres_i$ 使当前 loss 显著下降，但若干步后 $D_T(S_N,S^*)$ 反升。结果：逐步最小化即时残差（贪心）会破坏后续阶段所依赖的状态结构——全局几何 $G$、累积势能 $B$、条件 Hessian $H_Y$、metric $M$ 之间的相容性被打乱，使后续步的可达性与残差几何恶化。这正是 Sec.~\ref{sec:control} 把问题写成\textbf{多步最优控制}（Bellman / minmax）而非逐步最小化的理由：单步最优 $\neq$ 终端最优，须以 $D_T(S_N,S^*)$ 为目标做前瞻规划。
+\end{itemize}
+
+\begin{caveat}[诊断的可测性边界]\label{cav:s12:measurability}
+表~\ref{tab:s12:diag} 中 $\beta_{\mathrm{proj}},r_U,D_T$ 均依赖目标量（$G_S^*,U_S^*,S^*$），它们在实践中需用 held-out 子集数据或参考模型估计，故诊断含其自身的估计误差；$\sigma_{\mathrm{sub}}^2$ 须用重采样 / bootstrap 估计；$\chi_k$ 与 $\mathrm{spec}(\cL_i)$ 须用 NTK / Fisher 谱或方向探针估计。因此本节的告警是\emph{条件可测}——在给定估计协议下可测。这正是整节标注为第三类、而非把判别条件升格为定理的原因：缺少对目标量估计无偏性的额外假设，任一诊断的越界判定都不能无条件成立。失败模式 (i)--(v) 应理解为可被这些诊断\emph{预警}的风险，而非由诊断必然推出的结论。
+\end{caveat}
+
+% ----- S13 (sec:propositions) -----
+\section{形式化命题与推论}\label{sec:propositions}
+
+本节把前文（Sec.~\ref{sec:potential} 的残差势能、Sec.~\ref{sec:cov} 的 Hessian 分解、Sec.~\ref{sec:biasvar} 的偏差--方差结构、Sec.~\ref{sec:fiber} 的纤维继承/重建）整理为带显式假设、证明梗概与层级标注的编号结论。原讨论稿在多处用 ``$\approx$'' 或未定义算子（$\Rstr_z$、$A_S$、$\delta_B$）掩盖了逻辑跳步；下文凡涉及此类跳步，均以 \caveat 或 \remark 命名所缺假设并补全。层级标注沿用全文约定：\emph{第一类}为精确恒等式，\emph{第二类}为局部二阶近似（需声明线性化/小步长/局部性假设），\emph{第三类}为经验假设或可测诊断。
+
+\subsection{残差势能与数据场曲率（精确结构）}
+
+\begin{proposition}[残差势能递推]\label{prop:s13:residual}
+（第一类。）设第 $i$ 阶段目标分布 $q_i^*(\cdot\mid c)$ 与当前模型 $p_{i-1,t}(\cdot\mid c)$ 在同一基座 $p_{0,t}(\cdot\mid c)$ 上以累积势能表示，即
+$U_i^*(c,x,t)=\log\frac{q_i^*(x\mid c)}{p_{0,t}(x\mid c)}$，$B_{i-1}(c,x,t)=\log\frac{p_{i-1,t}(x\mid c)}{p_{0,t}(x\mid c)}$。
+若第 $i$ 阶段采用 KL-RLHF 的 Gibbs 闭式解，并\emph{以当前模型 $p_{i-1,t}$ 为 reference}（而非以基座为 reference），则 ideal reward $R_i$ 与逆温度 $\beta_i$ 满足精确恒等式
+\begin{equation}\label{eq:s13:reward}
+\frac{R_i(c,x,t)}{\beta_i}=U_i^*(c,x,t)-B_{i-1}(c,x,t)\qquad(\text{up to a }c\text{-only constant}).
+\end{equation}
+在条件模型中，经 fiberwise 中心化算子 $\Center_{i-1}[f](c,x)=f(c,x)-\E_{p_{i-1,t}(\cdot\mid c)}[f(c,X)]$ 吸收仅依赖 $c$ 的规范自由度后，势能残差
+\begin{equation}\label{eq:s13:g0}
+\boxed{\,g_i^{(0)}=\Center_{i-1}\!\big[\,U_i^*-B_{i-1}\,\big]\,}
+\end{equation}
+为良定义（即对 $U_i^*\mapsto U_i^*+\phi(c)$ 不变）。
+\end{proposition}
+
+\begin{proof}[证明梗概]
+Gibbs 解 $q_i^*\propto p_{i-1,t}\exp(R_i/\beta_i)$ 对 $x$ 取对数：$\log q_i^*=\log p_{i-1,t}+R_i/\beta_i-\log Z_i(c,t)$。两端各减 $\log p_{0,t}$ 得 $U_i^*=B_{i-1}+R_i/\beta_i-\log Z_i(c,t)$，移项即 \eqref{eq:s13:reward}；其中 $\log Z_i(c,t)$ 仅依赖 $(c,t)$，故为 $c$-only 常数。该常数在条件 fiber 上不影响 $\nabla_x$，且被中心化算子精确消去：对任意 $\phi(c)$ 有 $\Center_{i-1}[\phi]=\phi-\E_{p_{i-1,t}(\cdot\mid c)}[\phi]=0$。故 \eqref{eq:s13:g0} 与规范选择无关。
+\end{proof}
+
+\begin{remark}\label{rem:s13:gibbs}
+\eqref{eq:s13:reward} 是\emph{精确}变分结构而非近似：其唯一前提是目标取 Gibbs 形式且 reference 取当前模型 $p_{i-1,t}$。若误取基座 $p_{0,t}$ 为 reference，则右端退化为 $U_i^*$（丢失已累积的 $B_{i-1}$），这正是原稿在“第二阶段面对的 residual 是 $U_S^*-B_1^S$ 而非 $U_S^*-B_0$”一处强调的路径依赖来源（见 Sec.~\ref{sec:biasvar}）。
+\end{remark}
+
+\begin{proposition}[数据场 Hessian 分解]\label{prop:s13:hess}
+（第一类。）设阶段数据密度由隐变量混合给出，$q_{i,t}^D(x\mid c)=\int q_t(x\mid y)\,\nu_i(dy\mid c)$，其中 $q_t(x\mid y)$ 关于 $x$ 二次连续可微且可在积分号下两次求导。记条件 score $s_y=\nabla_x\log q_t(x\mid y)$、条件 Hessian $H_Y=\nabla_x^2\log q_t(x\mid y)$、posterior responsibility $\alpha_i(y\mid x,c,t)=q_t(x\mid y)\nu_i(dy\mid c)/q_{i,t}^D(x\mid c)$、混合 score $s_i^D=\E_{\alpha_i}[s_Y]$。则
+\begin{equation}\label{eq:s13:hess}
+\boxed{\,\nabla_x^2\log q_{i,t}^D(x\mid c)=\E_{\alpha_i}\!\big[H_Y\big]+\Cov_{\alpha_i}\!\big(s_Y\big)\,}
+\end{equation}
+其中 $\Cov_{\alpha_i}(s_Y)=\E_{\alpha_i}[(s_Y-s_i^D)(s_Y-s_i^D)^\top]=\Sigma_i^D$ 为 posterior score covariance（即 $\COV$ 几何的局部形）。
+\end{proposition}
+
+\begin{proof}[证明梗概]
+对 $\log q_{i,t}^D=\log\int q_t(x\mid y)\nu_i(dy\mid c)$ 一次求导得 $\nabla_x\log q_{i,t}^D=\E_{\alpha_i}[s_Y]=s_i^D$（responsibility 即 Radon--Nikodym 权重）。再求导，对 $s_i^D=\int s_y\,\alpha_i\,dy$ 用乘积法则：$\nabla_x s_i^D=\int(\nabla_x s_y)\alpha_i\,dy+\int s_y(\nabla_x\alpha_i)^\top dy$。第一项为 $\E_{\alpha_i}[H_Y]$；由 $\nabla_x\alpha_i=\alpha_i(s_y-s_i^D)$（对 $\alpha_i$ 取对数求导），第二项为 $\E_{\alpha_i}[s_Y(s_Y-s_i^D)^\top]=\Cov_{\alpha_i}(s_Y)$（因 $\E_{\alpha_i}[s_i^D(s_Y-s_i^D)^\top]=0$）。合并即 \eqref{eq:s13:hess}。详见 Sec.~\ref{sec:cov} 的 Hessian 分解。
+\end{proof}
+
+\begin{remark}\label{rem:s13:curv}
+\eqref{eq:s13:hess} 表明数据异质性\emph{真实进入}目标景观曲率：交叉项 $\Cov_{\alpha_i}(s_Y)\succeq 0$ 恒为半正定，故混合总使曲率不低于条件 Hessian 的 posterior 平均。多画师/多角色/多衣服在抬升 $\E_{\alpha_i}[H_Y]$ 稳定性的同时，可能因子场 score 方向相悖而放大 $\Sigma_i^D$——这是 Sec.~\ref{sec:case} 中“大合集 LoRA 平均化”现象的曲率根源。
+\end{remark}
+
+\subsection{全集--真子集的偏差--方差分解}
+
+\begin{proposition}[全集--真子集偏差--方差分解]\label{prop:s13:biasvar}
+（第二类 / 可测。）设 $D_2=S\subsetneq D_1$，全局几何状态 $G\in\cG$，限制算子 $\Rstr_S:\cG\to\cG$ 把全集几何投影到子集 fiber，$G_S^*$ 为子集真实目标几何。在如下假设下：
+\begin{itemize}\setlength\itemsep{1pt}
+\item[(A1)] \emph{估计无偏性}：$\E[\widehat{G}_1]=G_1^*$、$\E[\widehat{G}_S]=G_S^*$（各自数据下的统计估计渐近无偏）；
+\item[(A2)] \emph{投影偏差可加性}：$\Rstr_S(G_1^*)=G_S^*+\varepsilon_{\mathrm{proj}}$，$\varepsilon_{\mathrm{proj}}$ 为确定性投影偏差，源于全集几何不能精确还原子集几何；
+\item[(A3)] \emph{误差小量线性化}：$\Rstr_S$ 在 $G_1^*$ 邻域可线性化，估计涨落 $\widehat{G}_1-G_1^*$ 经 $\Rstr_S$ 传播的高阶项可略。
+\end{itemize}
+则全集投影路径与子集重估路径分别满足
+\begin{align}
+\Rstr_S(\widehat{G}_1)&=G_S^*+\varepsilon_{\mathrm{proj}}+\varepsilon_{\mathrm{stat}}^{(D_1)},\label{eq:s13:inherit}\\
+\widehat{G}_S&=G_S^*+\varepsilon_{\mathrm{stat}}^{(S)},\label{eq:s13:rebuild}
+\end{align}
+其中 $\varepsilon_{\mathrm{stat}}^{(D_1)}=\Rstr_S(\widehat{G}_1-G_1^*)$、$\varepsilon_{\mathrm{stat}}^{(S)}=\widehat{G}_S-G_S^*$ 为统计涨落。由 $|S|<|D_1|$ 通常有 $\Var(\varepsilon_{\mathrm{stat}}^{(S)})\gtrsim\Var(\varepsilon_{\mathrm{stat}}^{(D_1)})$ 而 $\E[\varepsilon_{\mathrm{proj}}]\neq 0$ 仅出现在 \eqref{eq:s13:inherit}。故继承（投影）= 低方差/保留偏差 $\varepsilon_{\mathrm{proj}}$；重建（重估）= 低偏差/高方差。
+\end{proposition}
+
+\begin{proof}[证明梗概]
+\eqref{eq:s13:inherit}：由 (A2) 写 $\Rstr_S(\widehat{G}_1)=\Rstr_S(G_1^*)+\Rstr_S(\widehat{G}_1-G_1^*)=G_S^*+\varepsilon_{\mathrm{proj}}+\varepsilon_{\mathrm{stat}}^{(D_1)}$，末步用 (A3) 的线性化。\eqref{eq:s13:rebuild}：由 (A1) 直接得。方差比较：在每点估计方差随样本量约 $\propto 1/N$ 的标准假设下，$N_S=|S|<N_{D_1}=|D_1|$ 给出 $\Var(\varepsilon_{\mathrm{stat}}^{(S)})\gtrsim\Var(\varepsilon_{\mathrm{stat}}^{(D_1)})$。两式相减即得偏差--方差对照。
+\end{proof}
+
+\begin{caveat}\label{cav:s13:AS}
+原稿写 $B_1^S\approx A_S(\Rstr_S(G_1),D_1)$ 与 $B_1^S=B_S^*+\delta_B(\varepsilon_{\mathrm{proj}})+\delta_B(\varepsilon_{\mathrm{stat}}^{(D_1)})$，但 $A_S$、$\delta_B$ 均未定义，构成跳步。本节将其严格收窄为：势能估计算子 $A_S$ 满足\emph{偏差传导一阶可微}假设——存在线性映射 $\delta_B=\partial A_S/\partial G\big|_{G_S^*}$，使几何误差经 $A_S$ 传到势能的领头项为 $\delta_B(\varepsilon_{\mathrm{proj}})+\delta_B(\varepsilon_{\mathrm{stat}}^{(D_1)})$。此为第二类近似（一阶 Taylor），其有效性要求 $\varepsilon_{\mathrm{proj}},\varepsilon_{\mathrm{stat}}$ 落在 $A_S$ 的线性响应域内；超出则 \eqref{eq:s13:inherit}--\eqref{eq:s13:rebuild} 向势能层的传导不再加性可分。
+\end{caveat}
+
+\subsection{策略最优性的条件结构}
+
+\begin{corollary}[fiber 策略无条件最优不存在]\label{cor:s13:noopt}
+（第三类。）设两种纤维策略：继承 $\,\textsf{inherit}\,$（$c_S^{(2)}=c_S^{(1)}$，势能残差 $J_{\textsf{inh}}$）与重建 $\,\textsf{rebuild}\,$（$c_S^{(2)}\neq c_S^{(1)}$，势能残差 $J_{\textsf{reb}}$），残差能量统一写为 $J\approx\big\langle (\,\id-\eta_i\cL_i)\gres_i,\;Q_i\,(\id-\eta_i\cL_i)\gres_i\big\rangle$（$Q_i\succeq0$）。若不指定（i）子集样本量 $|S|$、（ii）投影误差 $\varepsilon_{\mathrm{proj}}$ 量级、（iii）可达性（$\cL_i$ 在 $\cH_i$ 上的 reachability）、（iv）正则强度 $\lambda_i$、（v）终端目标 $S^\dagger$，则在 $\{\textsf{inherit},\textsf{rebuild}\}$ 上\emph{不存在}与上述变量无关的全序最优：即不存在使 $J_{\textsf{inh}}\le J_{\textsf{reb}}$（或反向）对所有配置一致成立的无条件定理。
+\end{corollary}
+
+\begin{proof}[证明梗概]
+构造两个反向情形即证。情形甲：$\varepsilon_{\mathrm{proj}}$ 大而 $|S|$ 充足、可达性高，则由 Prop.~\ref{prop:s13:biasvar}，重建消去 $\varepsilon_{\mathrm{proj}}$ 而引入的 $\varepsilon_{\mathrm{stat}}^{(S)}$ 受控，得 $J_{\textsf{reb}}<J_{\textsf{inh}}$。情形乙：$\varepsilon_{\mathrm{proj}}$ 小而 $|S|$ 极少、$\widehat{G}_S$ 方差高、可达性低，则重建抬升 $\gres_i$ 的几何残差且 $\cL_i$ 写入受阻，得 $J_{\textsf{inh}}<J_{\textsf{reb}}$。两情形并存即否定无条件全序；最优只能是 Pareto / Bellman 型条件最优（见 Sec.~\ref{sec:control} 的 Bellman 递推）。
+\end{proof}
+
+\begin{remark}\label{rem:s13:condition}
+判别落到\emph{可测}充要式：$\textsf{rebuild}$ 正收益 $\iff$ 偏差下降量 $>$ 方差增量 $+$ 可达性损失 $+$ 额外势能高度（对应 $J_{\textsf{reb}}<J_{\textsf{inh}}$）。这是诊断条件而非定理，量纲与测量见 Sec.~\ref{sec:diagnostics}。
+\end{remark}
+
+\begin{corollary}[楼塔收益条件]\label{cor:s13:tower}
+（第二类。）固定方向 $k$（某可达基方向），设该方向上的逐方向残差能量为 $(1-\eta\,\chi_k(\Rstr_z(G)))^2\,(g_k^{(0)})^2$，其中 $\Rstr_z(G)=\Sigma^{\mathrm{loc}}(z)$ 是全局几何 $G$ 在点 $z=(c,x,t)$ 的局部限制，$\chi_k(\Rstr_z(G))\in[0,1]$ 是 $\cL_i$ 在方向 $k$ 上的 reachability 系数（随 $\Rstr_z(G)$ 在该方向 better-conditioned 而单调递增），$\eta$ 为步长，$g_k^{(0)}$ 为该方向的势能残差分量（即“目标高度”）。在小步长线性响应假设（$\cL_i$ 局部线性、$\chi_k$ 对 $G$ 一阶可微）下，一个抬高目标复杂度的策略仍可净收益，其充分条件为该策略引起的变化满足
+\begin{equation}\label{eq:s13:tower}
+\boxed{\,\Delta\!\Big[\big(1-\eta\,\chi_k(\Rstr_z(G))\big)^2\,(g_k^{(0)})^2\Big]<0\,}
+\end{equation}
+即使其中 $\Delta\big[(g_k^{(0)})^2\big]>0$（目标变高）亦可成立。
+\end{corollary}
+
+\begin{proof}[证明梗概]
+对 \eqref{eq:s13:tower} 左端按乘积法则取一阶变分。记 $a=(1-\eta\chi_k)^2$、$b=(g_k^{(0)})^2$，则 $\Delta(ab)=a\,\Delta b+b\,\Delta a+o(\cdot)$。其中 $\Delta a=2(1-\eta\chi_k)\cdot(-\eta)\,\Delta\chi_k$，而由链式法则 $\Delta\chi_k=\chi_k'(\Rstr_z(G))\,\Rstr_z(\Delta G)$。故全局 COV 改善（$\Delta G$ 使 $\Rstr_z(G)$ 在方向 $k$ 更 well-conditioned）$\Rightarrow\Delta\chi_k>0\Rightarrow\Delta a<0$。只要 $b\,|\Delta a|>a\,\Delta b$，即\emph{地基抬升带来的残差税下降}超过\emph{目标变高带来的残差上升}，\eqref{eq:s13:tower} 成立。
+\end{proof}
+
+\begin{remark}[逻辑链显式化]\label{rem:s13:chain}
+楼塔条件的因果链须逐环讲清，避免原稿“地基升得多就赚”的口语跳步：
+\begin{enumerate}\setlength\itemsep{1pt}
+\item 全局 COV 几何改善：$G\to G'$ 使 posterior score covariance 更稳定；
+\item 经局部限制传导：$\Rstr_z(G)=\Sigma^{\mathrm{loc}}(z)$ 在方向 $k$ 上 better-conditioned（条件数下降）；
+\item reachability 上升：训练算子 $\cL_i$ 在该方向更易写入，$\chi_k(\Rstr_z(G))\uparrow$；
+\item 逐方向残差税下降：残差税因子 $(1-\eta\,\chi_k)^2\downarrow$（因 $\chi_k\to$ 较大值使 $1-\eta\chi_k$ 趋小）；
+\item 净残差可降：即便目标高度 $(g_k^{(0)})^2\uparrow$（楼变高），只要因子下降占优，逐方向残差能量 $(1-\eta\chi_k)^2(g_k^{(0)})^2$ 仍下降。
+\end{enumerate}
+一句话：楼变高不一定坏；只要脚下地面升得更多（reachability 抬升带来的残差税下降超过目标高度的上升），就是赚。
+\end{remark}
+
+\begin{caveat}\label{cav:s13:tower}
+\eqref{eq:s13:tower} 是\emph{逐方向}（fixed $k$）的第二类局部判据，依赖三项假设，缺一则结论失效：（i）$\cL_i$ 的局部线性响应（小步长 $\eta$，使一阶变分主导，$o(\cdot)$ 可略）；（ii）$\chi_k$ 对 $\Rstr_z(G)$ 单调且一阶可微（COV 改善确能单调传为 reachability 上升）；（iii）$\eta\chi_k<1$（残差税因子非负且未越过临界，否则 $1-\eta\chi_k$ 变号、过冲使能量回升）。跨方向求和 $\sum_k$ 时还需 $Q_i$ 在该基近似对角，否则不同方向的耦合项不可逐项分解——此即 Sec.~\ref{sec:case} 中异质 $\COV$ 导致大合集“平均化/糊化”的机制。
+\end{caveat}
+
+% ----- S14 (sec:glossary) -----
+\section{术语表、参考文档与公式总览}\label{sec:glossary}
+
+本节汇总全文使用的核心术语、所依据的两篇前置文档，以及把各节结论压缩为一处的公式总览附录。术语表（Table~\ref{tab:s14:glossary}）给出每个对象的最简定义，其严格定义与所需假设见对应正文章节；公式总览仅复述\emph{已在正文中证明或假设}的关系式，并对每条标注其层级（第一类精确恒等式 / 第二类局部二阶近似 / 第三类经验假设），不在此处引入新结论。
+
+\subsection{术语表}\label{s14:terms}
+
+\begin{table}[htbp]
+\centering
+\caption{核心术语与含义。严格定义见各节正文；本表仅作索引。}
+\label{tab:s14:glossary}
+\begin{tabular}{@{}p{0.22\textwidth}p{0.70\textwidth}@{}}
+\toprule
+\textbf{术语} & \textbf{含义} \\
+\midrule
+$B_i$ &
+第 $i$ 阶段后模型相对基座的累计势能 $B_i(c,x,t)=\log\!\big[p_{i,t}(x|c)/p_{0,t}(x|c)\big]$，是势能空间 $\cB$ 中的元素（见 Sec.~\ref{sec:potential}）。 \\
+\addlinespace
+$G_i$ &
+第 $i$ 阶段后模型学到的全局 $\COV$ / 数据场几何，即全局几何状态 $G_i\in\cG$；其在点 $z=(c,x,t)$ 处的局部二阶形式由 $\Rstr_z(G_i)=\Sigma_i^{\mathrm{loc}}(z)$ 给出（见 Sec.~\ref{sec:cov}）。 \\
+\addlinespace
+$\COV$ 场 &
+posterior score covariance $\Sigma_i^D=\Cov_{\alpha_i}(s_Y)$，刻画同一条件 $c$ 下不同隐变量子场 $y$ 的 score $s_y$ 之间的干涉与交叉协方差几何（始终指 covariance，绝非卷积，见 Sec.~\ref{sec:cov}）。 \\
+\addlinespace
+fiber &
+条件化路径，即把控制 $u_i=(\nu_i,T_i,\dots)$ 固定后由标签映射 $T_i$ 与可达子空间 $\cH_i$ 诱导的条件结构，例如人物标签、任务标签、adapter route、reward head（见 Sec.~\ref{sec:fiber}）。 \\
+\addlinespace
+继承 fiber &
+第二阶段沿用第一阶段子集的同一条件路径（同一 $T_i,\nu_i|_S,\cH_i$），其抽象含义为低 variance、低残差、强先验、低优化压力，代价是保留全集投影偏差（见 Sec.~\ref{sec:case}、Sec.~\ref{sec:fiber}）。 \\
+\addlinespace
+重建 fiber &
+第二阶段为真子集 $S$ 换一条条件路径或重新定义子集对齐路线（改写 $T_i,\cH_i$ 或用 $\nu_2$ 重估几何），其抽象含义为低 bias、高上限、可逃离旧绑定，代价是高 variance、高残差、对可达性与数据质量更敏感（见 Sec.~\ref{sec:case}、Sec.~\ref{sec:fiber}）。 \\
+\addlinespace
+投影偏差 &
+全集几何经限制算子投影到真子集后与真子集真实几何之间的偏差 $\varepsilon_{\mathrm{proj}}=\Rstr_S(G_1)-G_S^*$（见 Sec.~\ref{sec:case} 的 $\Rstr_S$ 分解）。 \\
+\addlinespace
+子集方差 &
+真子集 $S$ 样本少导致的 $\COV$ / 数据场估计不稳定，记为统计误差 $\varepsilon_{\mathrm{stat}}^{(D_1)}$ 等统计涨落项（见 Sec.~\ref{sec:biasvar}、Sec.~\ref{sec:case}）。 \\
+\addlinespace
+可达性 (reachability) &
+当前模型、LoRA 子空间 $\cH_i$、优化器与正则（度量 $M_i$、ridge $\lambda_i$、步长 $\eta_i$）能够把目标方向写入势能的程度，由线性响应算子 $\cL_i$ 在 $\cH_i$ 上的有效增益刻画（见 Sec.~\ref{sec:control}、Sec.~\ref{sec:fiber}）。 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{参考文档}\label{s14:refs}
+
+本理论建立在以下两篇前置文档之上；本文的状态递推框架可视为二者在“全集--真子集两阶段对齐”场景下的合流。
+
+\begin{itemize}
+\item \textbf{文档一}：《多阶段对齐的残差势能投影框架：从 KL-RLHF 闭式解到 Posterior Cumulant 景观递推》（即本仓库 \texttt{11\_rlhf\_interaction\_theory}）。提供累计势能 $B_i$、残差 reward $R_i$、条件 fiber、可达投影 $\ProjectOp$（作为 $\cL_i$ 在 $\lambda_i\to0$ 闭值域定度量极限下的特例）、路径依赖，以及 posterior cumulant landscape recursion——即本文核心状态递推 $S_{i+1}=F_i(S_i,u_i)$ 的势能分量来源。
+\item \textbf{文档二}：《动力学几何与流匹配：经验数据场分解与复合二次型能量》。提供经验测度正则化、posterior responsibility $\alpha_i$、score / Hessian 分解（$s_Y,H_Y$）、posterior score covariance $\Sigma_i^D$、多阶 cumulant tower，以及 Flow Matching 复合二次型能量——即本文全局 $\COV$ 几何分量 $G_i$ 与复合残差 $\gres_i$ 的来源。
+\end{itemize}
+
+\subsection{公式总览}\label{s14:formulas}
+
+以下按对象生成顺序复述全文已建立的关系式，并标注层级。除特别说明外，期望下标 $\alpha=\alpha_i(y|x,c,t)$，$\Center_{i-1}$ 为关于 $p_{i-1,t}(\cdot|c)$ 的 fiberwise centering 算子。
+
+\medskip
+\noindent\textbf{(A) 数据场与 posterior 几何（第一类，精确恒等式）。}
+由定义直接成立的边缘化、Bayes 权与一、二阶 score 恒等式（见 Sec.~\ref{sec:data}、Sec.~\ref{sec:cov}）。先是不含标签的 $N$ 阶纯图像分布：
+\begin{align*}
+q_{i,t}^{D,N}(x)
+&= \int q_t(x|y_{1:N})\,\nu_i^{(N)}(dy_{1:N}), \\
+\bar\alpha_i^{(N)}(dy_{1:N}|x,t)
+&=
+\frac{q_t(x|y_{1:N})\,\nu_i^{(N)}(dy_{1:N})}{q_{i,t}^{D,N}(x)}, \\
+\Sigma_i^{D,N}(x,t)
+&=\Cov_{\bar\alpha_i^{(N)}}(s_{Y^{(N)}}), \\
+\nabla_x^2\log q_{i,t}^{D,N}(x)
+&=\E_{\bar\alpha_i^{(N)}}[H_{Y^{(N)}}]+\Sigma_i^{D,N}(x,t).
+\end{align*}
+三阶画师--人物--衣服特例为
+\begin{align*}
+q_{i,t}^{D,APW}(x)
+&=
+\int \bar q_{i,t}(x|a,p,w)\,\nu_i^{APW}(da,dp,dw),\\
+\Sigma_i^{APW}(x,t)
+&=\Cov_{\alpha_i^{APW}}(s_{A,P,W}),\\
+\Sigma_i^{APW}
+&=
+\Cov_{\alpha(A)}(\mu_A)
++\E_{\alpha(A)}[\Cov_{\alpha(P|A)}(\mu_{A,P})]
++\E_{\alpha(A,P)}[\Cov_{\alpha(W|A,P)}(s_{A,P,W})].
+\end{align*}
+引入 caption 后，条件版本为：
+\begin{align*}
+q_{i,t}^D(x|c) &= \int q_t(x|y)\,\nu_i(dy|c), \\
+\alpha_i(y|x,c,t) &= \frac{q_t(x|y)\,\nu_i(dy|c)}{\int q_t(x|y')\,\nu_i(dy'|c)}, \\
+s_i^D &= \E_{\alpha}[\,s_Y\,], \\
+\Sigma_i^D &= \Cov_{\alpha}(s_Y)=\E_{\alpha}\!\big[(s_Y-s_i^D)(s_Y-s_i^D)^\top\big], \\
+\nabla_x^2 \log q_{i,t}^D &= \E_{\alpha}[\,H_Y\,]+\Sigma_i^D .
+\end{align*}
+最后一式即 conditional Hessian 的“期望 Hessian 加 posterior score covariance”分解，是第一类恒等式（$H_Y=\nabla_x^2\log q_t(x|y)$ 为条件对数密度 Hessian，与可达子空间 $\cH_i$ 是不同对象）。
+
+\medskip
+\noindent\textbf{(B) 势能与残差（第一类，定义恒等式）。}
+累计势能、势能残差与全局 $\COV$ 残差，以及二者堆叠成的复合残差（见 Sec.~\ref{sec:potential}、Sec.~\ref{sec:dualres}）：
+\begin{align*}
+B_i &= \log\!\big(p_{i,t}/p_{0,t}\big), \\
+g_i^{(0)} &= \Center_{i-1}\!\big[\,U_i^*-B_{i-1}\,\big], \\
+g_i^{(G)} &= G_i^*-G_{i-1}, \\
+\gres_i &= \big(\,g_i^{(0)},\ \sqrt{\rho_G}\,g_i^{(G)}\,\big).
+\end{align*}
+其中 $U_i^*(c,x,t)=\log\!\big(q_i^*(x|c)/p_{0,t}(x|c)\big)$ 为目标势能，$\rho_G\ge0$ 为几何分量的相对权重。这些均为定义层面的恒等式（第一类）。
+
+\medskip
+\noindent\textbf{(C) 状态递推（第二类，局部二阶近似）。}
+复合状态 $S_i=(B_i,G_i)\in\cS=\cB\times\cG$ 的单步更新（见 Sec.~\ref{sec:state}、Sec.~\ref{sec:control}）：
+\begin{equation*}
+S_{i+1}=S_i+\eta_i\,\cL_i(S_i,u_i)\,\gres_i+E_i .
+\end{equation*}
+\begin{caveat}\label{cav:s14:recursion}
+此式为\textbf{第二类}结论。它依赖于：（i）小步长 $\eta_i$ 下对训练映射的一阶线性化，使响应由 ridge 正则的线性响应算子 $\cL_i$（度量 $M_i$、ridge $\lambda_i$）刻画；$\cL_i$ \emph{不是}投影，仅在 $\lambda_i\to0$、闭值域、定度量极限下退化为正交投影 $\ProjectOp$。（ii）局部性：$\gres_i$ 在更新邻域内近似不变。高阶项与建模误差被收进 $E_i$；其有界性与方差控制属第三类经验假设（见 Sec.~\ref{sec:biasvar}）。
+\end{caveat}
+
+\medskip
+\noindent\textbf{(D) 最优控制值函数（第二类，minmax Bellman）。}
+对抗扰动 $\zeta$ 下的 Bellman 递推（见 Sec.~\ref{sec:control}）：
+\begin{equation*}
+V_i(S)=\inf_{u}\ \sup_{\zeta}\ \Big\{\ \langle r_i,\,Q_i\,r_i\rangle+V_{i+1}\!\big(F_i(S,u,\zeta)\big)\ \Big\}.
+\end{equation*}
+此为复合二次型代价下的 minmax 动态规划（第二类），其有效性建立在 (C) 的状态递推近似与二次型局部代价 $\langle r_i,Q_i r_i\rangle$ 之上；$r_i$ 为终端残差，$Q_i\succeq0$ 为代价度量。$\inf_u\sup_\zeta$ 与 $\sup_\zeta\inf_u$ 互换（从而存在鞍点）需 Sion minmax 条件：代价对 $u$ 拟凸、对 $\zeta$ 拟凹，且控制域与扰动域之一为紧凸——此为局部二次化近似下的标准假设（见 Sec.~\ref{sec:control}）。
+
+\medskip
+\noindent\textbf{(E) 全集$\to$真子集限制与子集势能（第三类，经验分解假设）。}
+对 $S=D_2\subsetneq D_1$，全集几何经限制算子 $\Rstr_S$ 投到子集，以及第一阶段子集势能的对应分解（见 Sec.~\ref{sec:case}）：
+\begin{align*}
+\Rstr_S(G_1) &= G_S^* + \varepsilon_{\mathrm{proj}} + \varepsilon_{\mathrm{stat}}^{(D_1)}, \\
+B_1^S &= B_S^* + \delta_B\!\big(\varepsilon_{\mathrm{proj}}\big) + \delta_B\!\big(\varepsilon_{\mathrm{stat}}^{(D_1)}\big).
+\end{align*}
+\begin{remark}\label{rem:s14:restriction}
+此两式为\textbf{第三类}结论。$\varepsilon_{\mathrm{proj}}$（投影偏差）与 $\varepsilon_{\mathrm{stat}}^{(D_1)}$（子集统计方差）是\emph{可测诊断量}而非零；$\delta_B(\cdot)$ 是把几何误差搬运到势能误差的（在 Caveat~\ref{cav:s14:recursion} 同款线性化下的）一阶灵敏度算子。因此 $B_1^S$ 是“全集几何投到 $S$ 后的稳定但可能有偏的势能估计”，第二阶段是否值得用 $\nu_2=\mathbf{1}_S\,\nu_1/\nu_1(S)$ 重建 fiber，取决于重估降低的 $\varepsilon_{\mathrm{proj}}$ 是否超过其引入的 variance、可达性损失与额外势能高度——此为本文判据，不构成无条件全序最优（见 Sec.~\ref{sec:biasvar}、Sec.~\ref{sec:strategies}）。
+\end{remark}
+
+\end{document}

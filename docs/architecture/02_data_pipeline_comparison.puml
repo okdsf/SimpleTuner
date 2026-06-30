@@ -1,4 +1,6 @@
 @startuml SDXL_Data_Pipeline_Kohya_vs_SimpleTuner
+!pragma svgsize 8192
+skinparam dpi 150
 !theme plain
 skinparam backgroundColor #FEFEFE
 skinparam defaultFontName "Microsoft YaHei"
@@ -8,6 +10,8 @@ skinparam RoundCorner 8
 skinparam PackageBorderThickness 2
 skinparam NoteBackgroundColor #FFFFDD
 skinparam NoteBorderColor #999999
+skinparam MaxMessageSize 500
+skinparam wrapWidth 400
 
 title **Kohya vs SimpleTuner 数据管线对比**\n同一张图片从文件夹到 Trainer 的两条路径
 

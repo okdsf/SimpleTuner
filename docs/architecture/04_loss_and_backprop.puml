@@ -1,4 +1,6 @@
 @startuml SDXL_Loss_and_Backpropagation
+!pragma svgsize 8192
+skinparam dpi 150
 !theme plain
 skinparam backgroundColor #FEFEFE
 skinparam defaultFontName "Microsoft YaHei"
@@ -8,6 +10,8 @@ skinparam RoundCorner 8
 skinparam PackageBorderThickness 2
 skinparam NoteBackgroundColor #FFFFDD
 skinparam NoteBorderColor #999999
+skinparam MaxMessageSize 500
+skinparam wrapWidth 400
 
 title **SDXL Loss计算 + 反向传播 完整链路**\n从 UNet 输出到权重更新的每一步\n代码: common.py (Loss) + trainer.py (反向传播+优化)
 

@@ -1,4 +1,6 @@
 @startuml SDXL_UNet_Forward_Internals
+!pragma svgsize 8192
+skinparam dpi 150
 !theme plain
 skinparam backgroundColor #FEFEFE
 skinparam defaultFontName "Microsoft YaHei"
@@ -8,6 +10,8 @@ skinparam RoundCorner 8
 skinparam PackageBorderThickness 2
 skinparam NoteBackgroundColor #FFFFDD
 skinparam NoteBorderColor #999999
+skinparam MaxMessageSize 500
+skinparam wrapWidth 400
 
 title **SDXL UNet 前向传播内部结构**\n从 noisy_latent 输入到 predicted_noise 输出的完整数据流\n代码位置: diffusers/models/unets/unet_2d_condition.py
 

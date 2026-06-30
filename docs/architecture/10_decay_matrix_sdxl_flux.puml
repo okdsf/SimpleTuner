@@ -1,0 +1,235 @@
+@startuml Decay_Matrix_SDXL_FLUX
+!pragma svgsize 8192
+skinparam dpi 150
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontName "Microsoft YaHei"
+skinparam defaultFontSize 10
+skinparam ArrowThickness 2
+skinparam RoundCorner 8
+skinparam PackageBorderThickness 2
+skinparam NoteBackgroundColor #FFFFDD
+skinparam NoteBorderColor #999999
+skinparam MaxMessageSize 800
+skinparam wrapWidth 600
+
+title **特征衰退矩阵: 标签策略 × 数据丰富度**\n标签归因(Credit Assignment)与协方差驱动的衰退方向\n适用于: SDXL / FLUX 1.dev / FLUX 2.dev 人物训练\n理论核心: 恒定特征沿相关性最高路径衰退进常量汇
+
+' ============================================================
+' 理论框架
+' ============================================================
+package "**衰退理论框架**" as PKG_THEORY #FFF3E0 {
+
+    rectangle "**核心机制: 归因由协方差驱动**\n\n训练时, 梯度在解一个归因(credit assignment)问题:\n\"这些装束像素, 应该由哪个输入信号负责?\"\n\n可选的归因汇(sink)有三个层级:\n\n**1. 具体描述 token** (\"black coat\")\n   → 条件汇, 预训练中有强先验吸引盆地\n   → 最容易承接装束归因 (低能量改写)\n\n**2. 角色触发词** (\"Skadi\")\n   → 次级常量汇, 每张训练图都出现\n   → corr(Skadi, 装束) = 1.0\n   → 如果没有替代汇, 装束必然衰退到这里\n\n**3. 无条件 bias**\n   → 终极常量汇, 永远在场 (caption dropout + 恒定层)\n   → corr(bias, 任何恒定特征) ≡ 1.0 (定义上)\n   → 如果连触发词都没有, 一切衰退到这里" as THEORY_CORE #FFE0B2
+
+    rectangle "**衰退方向的决定规则**\n\n**规则1:** corr(视觉特征, 信号) = 1.0 时\n  → 特征**必然**衰退进该信号\n  → 因为梯度把恒定特征归因给恒定信号\n\n**规则2:** 当多个汇的 corr 都 = 1.0 时\n  → 梯度偏好**能量最低**的那个\n  → \"black coat\" < \"Skadi\" (预训练先验使coat更便宜)\n  → 但 Skadi 仍在每步吃梯度 (竞争关系)\n\n**规则3:** 打断 corr 是唯一的硬锁\n  → 数据方差 (多套装束) 使 corr < 1.0\n  → 此时特征被**强制踢出**该汇\n  → 描述是软杠杆 (提供替代), 方差是硬杠杆 (打断相关)" as THEORY_RULES #FFCC80
+
+    rectangle "**高噪声时间步的放大效应**\n\n在高噪声 timestep (去噪早期):\n图像 token ≈ 纯噪声, 不携带信息\n\n此时模型决定全局结构 (有没有大衣? 什么颜色?)\n**只能依赖 conditioning** (文本 + bias)\n因为图像侧无信息可用\n\n→ 装束等全局结构的归因\n   在高噪声步被**反复强化**到恒定条件上\n→ 这是装束-角色绑定最强的铸造时刻\n\n\"没有图像信号 = 所有结构都得由条件承担\"\n→ 你说的 \"没有信号 = 都是信号\" 在 timestep 维度的化身" as THEORY_TIMESTEP #FFB74D
+}
+
+note right of THEORY_CORE
+  **完整衰退陈述:**
+
+  任何恒定出现的视觉特征,
+  其归因会沿相关性最高的路径,
+  衰退进系统中的"常量汇"
+  ——恒定 token 与无条件 bias.
+
+  **缺统一触发词:**
+    特征无处可挂
+    → 全部衰退进无条件 bias
+    → 任何 prompt 都收敛向训练模式
+
+  **只有统一触发词 "Skadi":**
+    特征衰退进 Skadi
+    → 角色与装束焊死
+
+  **触发词 + 描述:**
+    提供低能量替代汇
+    信用部分虹吸出去
+    → 概率性解耦 (相关性未断)
+
+  **触发词 + 描述 + 数据方差:**
+    相关性被打断
+    → 强制解耦 (唯一可靠的锁)
+end note
+
+' ============================================================
+' SDXL 架构特征
+' ============================================================
+package "**SDXL 架构与衰退特性**" as PKG_SDXL_ARCH #E3F2FD {
+
+    rectangle "**SDXL 架构: 有天然防火墙**\n\n**UNet 结构:**\nconv_in → ResNet → **Self-Attn (attn1)** → **Cross-Attn (attn2)** → FFN → conv_out\n\n**文本编码器:**\nCLIP-L [77,768] + OpenCLIP-G [77,1280]\n→ 拼接 prompt_embeds [77, 2048]\n→ pooled [1280]\n\n**关键架构特征:**\n• Cross-Attention 是**单向**的: 图像→文本, 文本不变\n• Self-Attention (attn1) 与文本**完全隔离**\n• ResNet 全部是卷积, 与文本**完全隔离**\n→ 存在**架构防火墙**: 非文本层只建模**局部纹理和空间关系**\n→ 泄漏是浅层的, 可用 prompt 部分覆盖" as SDXL_ARCH #BBDEFB
+}
+
+' ============================================================
+' SDXL 衰退矩阵 — 拆成4行
+' ============================================================
+package "**SDXL 衰退矩阵: 无触发词**" as PKG_SDXL_R1 #E3F2FD {
+    rectangle "**少量同装束 (20张)**\n\n⚠️ **中度泄漏**\n\n• 装束+脸 → 无条件bias\n• ResNet 记住皮肤纹理\n• Cross-Attn 对通用词偏移\n  (\"1girl\"就出训练人物)\n• 但: 架构防火墙限制了偏移深度\n  Self-Attn只学了空间关系\n→ 可用差异大的prompt**部分覆盖**" as SDXL_R1C1 #BBDEFB
+
+    rectangle "**少量多装束 (20张, 3-5套)**\n\n⚠️ **轻度泄漏**\n\n• 脸 → bias (仍恒定)\n• 装束因数据方差而分散\n  corr(bias, 特定装束) < 1.0\n• Cross-Attn 保持部分通用能力\n→ 有时出训练人物\n→ 较容易用prompt覆盖" as SDXL_R1C2 #90CAF9
+
+    rectangle "**大量多装束 (100+张)**\n\n✅ **微弱泄漏**\n\n• 数据量足以维持\n  Cross-Attn 的通用性\n• ResNet 的纹理偏移被稀释\n• 偶尔残留训练风格\n→ 基本可控, 接近正常模型" as SDXL_R1C3 #64B5F6
+}
+
+package "**SDXL 衰退矩阵: 只有触发词 (Skadi)**" as PKG_SDXL_R2 #E3F2FD {
+    rectangle "**少量同装束 (20张)**\n\n🔴 **强绑定**\n\n• corr(Skadi, 装束) = 1.0\n• corr(Skadi, 脸) = 1.0\n• 脸+装束全焊死到 Skadi\n• Cross-Attn 的 W_k·E_skadi\n  同时编码了脸和衣服\n→ Skadi = 这个人 + 这套衣服\n→ 换装几乎不可能" as SDXL_R2C1 #BBDEFB
+
+    rectangle "**少量多装束 (20张, 3-5套)**\n\n⚠️ **中度绑定**\n\n• 脸焊到 Skadi (corr=1.0)\n• 装束因方差 corr 降低\n  部分解耦\n• Cross-Attn 对 Skadi 的响应\n  仍偏好训练中出现最多的装束\n→ Skadi ≈ 这个人\n→ 装束偶尔可换, 但有偏好" as SDXL_R2C2 #90CAF9
+
+    rectangle "**大量多装束 (100+张)**\n\n✅ **良好解耦**\n\n• corr(Skadi, 任一装束) < 1.0\n• 装束归因被数据方差打散\n  各装束token各自承接\n• 脸稳定绑定到 Skadi\n→ Skadi ≈ 这个人的脸\n→ 可搭配不同描述换装" as SDXL_R2C3 #64B5F6
+}
+
+package "**SDXL 衰退矩阵: 触发词+描述 (Skadi, black coat)**" as PKG_SDXL_R3 #E3F2FD {
+    rectangle "**少量同装束 (20张)**\n\n⚠️ **部分解耦**\n\n• \"black coat\" 提供替代汇\n  预训练中coat有强吸引盆地\n  → 装束被**部分虹吸**到coat\n• 但 corr(Skadi,装束) 仍=1.0\n  → Skadi 仍在每步吃装束梯度\n→ 概率性解耦\n→ 有时能换装, 有时不行\n→ 脸稳定绑定到 Skadi" as SDXL_R3C1 #BBDEFB
+
+    rectangle "**少量多装束 (20张, 3-5套)**\n\n⚠️→✅ **较好解耦**\n\n• 替代汇 + 数据方差双重作用\n• 装束归因主要流向描述 token\n• corr 被数据部分打断\n→ Skadi ≈ 脸\n→ \"black coat\" ≈ 黑大衣\n→ 换装较稳定" as SDXL_R3C2 #90CAF9
+
+    rectangle "**大量多装束 (100+张)**\n\n✅ **完全解耦**\n\n• 数据方差 (硬锁)\n  + 描述 (软杠杆) 协同\n• corr 被彻底打断\n• 各属性独立可控:\n  触发词 = 身份\n  描述 = 可变属性\n→ 最佳训练配置" as SDXL_R3C3 #64B5F6
+}
+
+package "**SDXL 衰退矩阵: 通用标签 (\"anime girl\")**" as PKG_SDXL_R4 #E3F2FD {
+    rectangle "**少量同装束 (20张)**\n\n🔴 **概念污染**\n\n• \"anime girl\" 这个常见词被改写\n• 预训练的强吸引盆地被覆盖\n• 所有 anime girl 都像训练对象\n• 装束+脸 → \"anime girl\" + bias\n→ 污染通用概念\n→ 但SDXL的防火墙限制了污染深度\n→ 其他prompt类型受影响较小" as SDXL_R4C1 #BBDEFB
+
+    rectangle "**少量多装束 (20张, 3-5套)**\n\n🔴→⚠️ **部分概念污染**\n\n• \"anime girl\" 仍被偏移\n• 但装束分散减轻了绑定\n• 面部特征仍被编码进\n  \"anime girl\" 的响应中\n→ anime girl 偏向训练风格\n→ 但不是完全替代" as SDXL_R4C2 #90CAF9
+
+    rectangle "**大量多装束 (100+张)**\n\n⚠️ **风格偏移**\n\n• 大量数据 + 方差\n  保护了部分通用能力\n• 但 \"anime girl\" 仍有\n  向训练风格的偏移\n→ 类似轻度 style LoRA 效果\n→ 不推荐用通用标签" as SDXL_R4C3 #64B5F6
+}
+
+' ============================================================
+' FLUX 1.dev 架构特征
+' ============================================================
+package "**FLUX 1.dev 架构与衰退特性**" as PKG_FLUX1_ARCH #FFEBEE {
+
+    rectangle "**FLUX 1.dev 架构: 没有防火墙**\n\n**Transformer 结构:**\n19 Double Stream (Joint Attn 双向) + **38 Single Stream** (合并序列)\n\n**文本编码器:**\nCLIP-L pooled [768] + T5-XXL sequence [512, 4096]\nT5 不可训练 (SimpleTuner //trainer.py:3282// 硬跳过)\n\n**关键架构特征:**\n• Joint Attention 是**双向**的: 图像⇄文本, 文本流也被图像更新\n• **38个Single Stream Block** 占总深度 67% (38/57)\n  → 文本token和图像token已合并为一个序列\n  → 权重**完全不区分**文本/图像\n  → 这些层建模的是**全局语义概念** (身份/构图/风格)\n• **没有架构防火墙**: 没有任何层被强制只看文本\n→ 泄漏是深层的, **极难**用 prompt 覆盖\n→ 比 SDXL 严重得多" as FLUX1_ARCH #FFCDD2
+}
+
+' ============================================================
+' FLUX 1.dev 衰退矩阵 — 拆成4行
+' ============================================================
+package "**FLUX 1.dev 衰退矩阵: 无触发词**" as PKG_FLUX1_R1 #FFEBEE {
+    rectangle "**少量同装束 (20张)**\n\n🔴 **严重泄漏**\n\n• 38层 Single Stream 全偏移\n• 这些层学到:\n  \"不管文本是什么, 默认生成这个人\"\n  (文本在变, 优化目标不变 → 忽略文本)\n• 装束+脸+构图全部进 bias\n→ 任何 prompt 都出训练人物\n→ **几乎不可能用 prompt 覆盖**\n→ 因为偏移在全局语义层" as FLUX1_R1C1 #FFCDD2
+
+    rectangle "**少量多装束 (20张, 3-5套)**\n\n🔴→⚠️ **重度泄漏**\n\n• 脸强绑定到 bias\n• 装束因方差略有分散\n• 但 Single Stream 的偏移仍深\n  这些层不看token类型\n  只看统计模式\n→ 多数 prompt 出训练人物\n→ 少数差异很大的 prompt 可挣脱\n→ 比SDXL同条件下严重得多" as FLUX1_R1C2 #EF9A9A
+
+    rectangle "**大量多装束 (100+张)**\n\n⚠️ **中度泄漏**\n\n• 大量数据提供方差信号\n• 但 Single Stream 的\n  全局语义偏移难以完全纠正\n• 38层 × 3072维 的\"记忆\"\n  不是100张图能轻易稀释的\n→ 风格和面部特征残留\n→ 可用差异很大的 prompt 覆盖\n→ 但总有训练风格的影子" as FLUX1_R1C3 #E57373
+}
+
+package "**FLUX 1.dev 衰退矩阵: 只有触发词 (Skadi)**" as PKG_FLUX1_R2 #FFEBEE {
+    rectangle "**少量同装束 (20张)**\n\n🔴🔴 **极强绑定**\n\n• 脸+装束+风格全焊到 Skadi\n• 38层 Single Stream 加固绑定:\n  在合并序列中, Skadi token 的\n  统计模式与训练人物的所有特征\n  形成了深度关联\n• Joint Attn 双向让文本流也偏移\n→ Skadi = **完整的训练快照**\n  (构图/光影/装束/脸 全包含)\n→ 换任何属性都极困难" as FLUX1_R2C1 #FFCDD2
+
+    rectangle "**少量多装束 (20张, 3-5套)**\n\n🔴 **强绑定**\n\n• 脸焊死到 Skadi\n• 装束因方差部分解耦\n• 但 Single Stream 的深层语义\n  仍倾向训练中最常见的模式\n• Joint Attn 让文本流\n  \"学会了\"偏好特定视觉模式\n→ Skadi 生成的人物\n→ 装束可微调但不干净\n→ 总有训练模式的残影" as FLUX1_R2C2 #EF9A9A
+
+    rectangle "**大量多装束 (100+张)**\n\n⚠️→✅ **较好解耦**\n\n• 数据方差终于能对抗\n  Single Stream 的偏移\n• corr 被数据打断\n• Joint Attn 有足够样本\n  学到真正的文本敏感性\n→ Skadi ≈ 身份\n→ 可搭配新描述\n→ 但偶有训练风格残留" as FLUX1_R2C3 #E57373
+}
+
+package "**FLUX 1.dev 衰退矩阵: 触发词+描述 (Skadi, black coat)**" as PKG_FLUX1_R3 #FFEBEE {
+    rectangle "**少量同装束 (20张)**\n\n🔴→⚠️ **部分解耦**\n\n• \"black coat\" 提供替代汇\n• 但 Single Stream 不看 token 类型\n  它只看 token 在序列中的\n  统计分布模式\n• 替代汇的虹吸效率\n  **弱于 SDXL** (没有Cross-Attn的\n  强制文本敏感通道)\n→ 脸可绑 Skadi\n→ 装束解耦不稳定" as FLUX1_R3C1 #FFCDD2
+
+    rectangle "**少量多装束 (20张, 3-5套)**\n\n⚠️ **中度解耦**\n\n• 替代汇 + 数据方差共同作用\n• 装束归因被部分虹吸\n• 但 Single Stream 深层绑定\n  使得\"完全换装\"仍有残影\n• Joint Attn 中 coat token\n  开始建立自己的视觉映射\n→ 能换装但有训练装束影子\n→ 比SDXL同条件下解耦差" as FLUX1_R3C2 #EF9A9A
+
+    rectangle "**大量多装束 (100+张)**\n\n✅ **良好解耦**\n\n• 数据方差 (硬锁)\n  + 描述 (软杠杆)\n  + 足够步数让 Joint Attn\n    学到文本敏感性\n• Single Stream 的偏移\n  被大量数据稀释\n→ 各属性较独立\n→ 偶有风格残留" as FLUX1_R3C3 #E57373
+}
+
+package "**FLUX 1.dev 衰退矩阵: 通用标签 (\"anime girl\")**" as PKG_FLUX1_R4 #FFEBEE {
+    rectangle "**少量同装束 (20张)**\n\n🔴🔴 **灾难性污染**\n\n• \"anime girl\" 被深度改写\n• 38层 Single Stream 将\n  训练人物焊入 \"anime girl\" 概念\n• 不同于SDXL的浅层纹理污染\n  FLUX 的污染在**全局语义层**\n→ 所有 anime girl 都像训练对象\n→ **无法用 prompt 纠正**\n→ 因为38层的\"世界观\"已被改写" as FLUX1_R4C1 #FFCDD2
+
+    rectangle "**少量多装束 (20张, 3-5套)**\n\n🔴 **严重概念污染**\n\n• \"anime girl\" 仍被深度改写\n• 装束分散略减轻污染\n  但身份特征全部绑定\n• Single Stream 对 \"anime girl\"\n  的理解已经 = 训练角色\n→ anime girl ≈ 训练角色\n→ 非anime prompt 受轻度影响" as FLUX1_R4C2 #EF9A9A
+
+    rectangle "**大量多装束 (100+张)**\n\n🔴→⚠️ **概念偏移**\n\n• 大量数据提供对抗力\n• 但 \"anime girl\" 仍有\n  明显向训练风格的偏移\n• 38层的深度偏移\n  不是简单堆数据能完全修复的\n→ 比SDXL同条件下\n→ 偏移更深更持久" as FLUX1_R4C3 #E57373
+}
+
+' ============================================================
+' FLUX 2.dev 架构特征
+' ============================================================
+package "**FLUX 2.dev 架构与衰退特性**" as PKG_FLUX2_ARCH #F3E5F5 {
+
+    rectangle "**FLUX 2.dev 架构: 更深更宽, 衰退风险最大**\n\n**Transformer 结构:**\n8 Double Stream + **48 Single Stream** (比FLUX 1多10个!)\n• dev: 8 double + 48 single = 56 blocks, ~30B params\n• klein-9b: 8 double + 24 single = 32 blocks\n• klein-4b: 5 double + 20 single = 25 blocks\n\n**文本编码器:**\nMistral-3-24B (单编码器, 从 layer 10/20/30 抽取特征拼接)\n\n**关键架构参数:**\n• inner_dim = **6144** (FLUX 1 的 2倍 → 更宽的表征)\n• VAE: **128通道, 16×压缩** → 序列长度 **1024** (FLUX 1的1/4)\n• 4D RoPE: (T, H, W, L) 支持多图像身份编码\n• **48个 Single Stream** 占总深度 **86%** (48/56)\n\n**为什么衰退更严重:**\n• Single Stream 更多 (48 vs 38)\n• 维度更宽 (6144 vs 3072) → 更大的\"记忆容量\"\n• 序列更短 (1024 vs 4096) → attention 覆盖更密 → 概念绑定更紧" as FLUX2_ARCH #CE93D8
+}
+
+' ============================================================
+' FLUX 2.dev 衰退矩阵 — 拆成4行
+' ============================================================
+package "**FLUX 2.dev 衰退矩阵: 无触发词**" as PKG_FLUX2_R1 #F3E5F5 {
+    rectangle "**少量同装束 (20张)**\n\n🔴🔴 **极严重泄漏**\n\n• 48层 Single Stream 全偏移\n  占总深度 86%\n• 6144维的宽表征\n  加深绑定 (更多\"记忆容量\")\n• 序列长度1024 (FLUX 1的1/4)\n  attention矩阵更密集\n  每个token都能看到所有其他token\n→ 几乎所有prompt都出训练人物\n→ **比FLUX 1更难覆盖**\n→ 语义编码更宽更深" as FLUX2_R1C1 #CE93D8
+
+    rectangle "**少量多装束 (20张, 3-5套)**\n\n🔴 **严重泄漏**\n\n• 脸强绑定到 bias\n• 48层的深度偏移\n  即使装束有方差\n  仍难以纠正全局偏移\n• 6144维度让每层的偏移\n  更加\"精细\"和\"顽固\"\n→ 多数 prompt 出训练人物\n→ 比FLUX 1同条件下更严重" as FLUX2_R1C2 #B39DDB
+
+    rectangle "**大量多装束 (100+张)**\n\n⚠️→🔴 **中重度泄漏**\n\n• 大量数据与48层偏移对抗\n• 短序列(1024)使 attention\n  覆盖更密, 偏移更均匀分布\n• 需要比FLUX 1**更多数据**\n  才能稀释48层的偏移\n→ 比FLUX 1同条件下\n→ 风格残留更顽固\n→ 建议200+张以上" as FLUX2_R1C3 #9575CD
+}
+
+package "**FLUX 2.dev 衰退矩阵: 只有触发词 (Skadi)**" as PKG_FLUX2_R2 #F3E5F5 {
+    rectangle "**少量同装束 (20张)**\n\n🔴🔴 **极强绑定**\n\n• 比FLUX 1更严重\n• 48层 + 6144维度宽\n  = 更大的\"记忆容量\"\n• 角色的**每个微小细节**\n  都被编码进 Skadi 响应:\n  发丝走向/衣领形状/阴影模式\n→ Skadi 触发完整的训练快照\n→ 几乎不可调\n→ 比FLUX 1的\"快照\"更高清" as FLUX2_R2C1 #CE93D8
+
+    rectangle "**少量多装束 (20张, 3-5套)**\n\n🔴 **强绑定**\n\n• 类似FLUX 1但更深\n• 数据方差的对抗力\n  在48层面前更弱\n• 每层6144维度意味着\n  更多冗余可以\"记住\"绑定\n→ 装束微调空间更小\n→ 解耦效果弱于FLUX 1同条件" as FLUX2_R2C2 #B39DDB
+
+    rectangle "**大量多装束 (100+张)**\n\n⚠️ **部分解耦**\n\n• corr 被数据打断\n• 但48层的深层语义\n  保留更多训练模式\n• 需要比FLUX 1更多数据\n  和更长训练来建立\n  稳定的文本敏感性\n→ 可换装但残留比FLUX 1明显\n→ 建议150+张以上" as FLUX2_R2C3 #9575CD
+}
+
+package "**FLUX 2.dev 衰退矩阵: 触发词+描述 (Skadi, black coat)**" as PKG_FLUX2_R3 #F3E5F5 {
+    rectangle "**少量同装束 (20张)**\n\n🔴 **弱解耦**\n\n• 替代汇在48层面前\n  虹吸效率更低\n• Single Stream 有更多容量\n  来\"记住\"Skadi-装束的绑定\n  替代汇的力量不够虹吸出来\n• 6144维让绑定更分散\n  更难被单一token虹吸\n→ 描述的软杠杆效果\n→ **弱于 FLUX 1**" as FLUX2_R3C1 #CE93D8
+
+    rectangle "**少量多装束 (20张, 3-5套)**\n\n⚠️ **中度解耦**\n\n• 替代汇 + 方差共同作用\n• 在48层的压力下\n  仍能实现部分解耦\n• 但\"完全换装\"时\n  残影比FLUX 1更明显\n→ 能换装但有训练装束影子\n→ 需要更强的描述覆盖" as FLUX2_R3C2 #B39DDB
+
+    rectangle "**大量多装束 (100+张)**\n\n⚠️→✅ **较好解耦**\n\n• 需要比FLUX 1**更多数据**\n  才能达到同等解耦程度\n• 48层 + 6144维 需要\n  更大的数据方差来稀释\n• 但最终可以达到\n→ 各属性较独立\n→ 风格残留需注意\n→ 建议150+张, 5套以上装束" as FLUX2_R3C3 #9575CD
+}
+
+package "**FLUX 2.dev 衰退矩阵: 通用标签 (\"anime girl\")**" as PKG_FLUX2_R4 #F3E5F5 {
+    rectangle "**少量同装束 (20张)**\n\n🔴🔴🔴 **灾难性污染 (最严重)**\n\n• 48层 + 6144维度\n  = **最大的概念改写容量**\n• \"anime girl\" 被彻底替换\n• 模型对该概念的\n  通用能力几乎归零\n• 48层的86%占比意味着\n  几乎整个网络都在\n  \"服务于\"训练对象\n→ **所有模型×策略中最不推荐**" as FLUX2_R4C1 #CE93D8
+
+    rectangle "**少量多装束 (20张, 3-5套)**\n\n🔴🔴 **严重概念污染**\n\n• 比FLUX 1同条件下\n  污染更深更广\n• 48层编码了更完整的\n  训练对象表征\n• 6144维让每层的偏移\n  更加精细难以覆盖\n→ 概念恢复极困难\n→ 基本等于废了\"anime girl\"" as FLUX2_R4C2 #B39DDB
+
+    rectangle "**大量多装束 (100+张)**\n\n🔴 **深度概念偏移**\n\n• 即使大量数据\n  48层的偏移仍难完全纠正\n• 比FLUX 1同条件下\n  需要更多数据(200+张)\n  和更多训练步数\n→ 通用标签 + FLUX 2\n→ 是最差的组合\n→ **强烈建议使用触发词**" as FLUX2_R4C3 #9575CD
+}
+
+' ============================================================
+' 跨模型对比总结
+' ============================================================
+package "**跨模型对比总结**" as PKG_SUMMARY #E8F5E9 {
+
+    rectangle "**衰退严重度排序 (同一标签策略 + 同一数据条件)**\n\nSDXL  **<**  FLUX 1.dev  **<**  FLUX 2.dev\n\n| 指标 | SDXL | FLUX 1.dev | FLUX 2.dev |\n|---|---|---|---|\n| 架构防火墙 | ✅ 有 (Self/Cross分离) | ✗ 无 | ✗ 无 |\n| Single Stream 层数 | **0** | **38** | **48** |\n| Single Stream 占比 | 0% | 67% | **86%** |\n| inner_dim | 320-1280 (变化) | 3072 | **6144** |\n| 序列长度 | ~16384 | 4096 | **1024** |\n| 非文本层语义深度 | 浅 (纹理/空间) | 深 (全局概念) | **最深 (宽表征)** |\n| 同条件下解耦难度 | 最低 | 中 | **最高** |\n| 推荐最低数据量 | 20-50张 | 50-100张 | **100-200张** |" as COMPARE_TABLE #C8E6C9
+
+    rectangle "**推荐配置 (所有模型通用)**\n\n✅ **最佳:** 触发词 + 详细描述 + 多样数据\n   \"Skadi, black coat, red eyes, standing, park background\"\n   + 多套装束, 多场景, 100+张图 (FLUX 2建议200+)\n   → 触发词承接身份, 描述承接可变属性, 数据方差打断相关性\n\n⚠️ **可接受:** 触发词 + 描述 + 少量多样数据\n   → 部分解耦, 可能有残影\n   → FLUX 上残影比 SDXL 更明显\n\n🔴 **避免:** 通用标签 + 少量同质数据\n   → 概念污染, 尤其在 FLUX 上几乎不可逆\n\n🔴🔴 **绝对避免:** 通用标签 + 少量同质数据 + FLUX 2\n   → 所有组合中最严重的概念破坏" as RECOMMENDATION #A5D6A7
+}
+
+note bottom of RECOMMENDATION
+  **核心结论:**
+
+  1. **衰退的方向由协方差决定**, 不由语义决定
+     → 恒定特征衰退进恒定信号, 这是数学必然
+
+  2. **描述是软杠杆** (提供替代汇, 概率性)
+     **数据方差是硬杠杆** (打断相关性, 决定性)
+     → 二者协同最有效
+
+  3. **架构决定泄漏深度:**
+     SDXL 有防火墙 → 泄漏浅 (纹理级)
+     FLUX 无防火墙 → 泄漏深 (概念级)
+
+  4. **FLUX 2 比 FLUX 1 需要更多数据**
+     才能达到同等解耦程度
+     因为: 更多Single Stream + 更宽维度 + 更短序列
+end note
+
+' ============================================================
+' 布局连接
+' ============================================================
+PKG_THEORY -[hidden]-> PKG_SDXL_ARCH
+PKG_SDXL_ARCH -[hidden]-> PKG_SDXL_R1
+PKG_SDXL_R1 -[hidden]-> PKG_SDXL_R2
+PKG_SDXL_R2 -[hidden]-> PKG_SDXL_R3
+PKG_SDXL_R3 -[hidden]-> PKG_SDXL_R4
+PKG_SDXL_R4 -[hidden]-> PKG_FLUX1_ARCH
+PKG_FLUX1_ARCH -[hidden]-> PKG_FLUX1_R1
+PKG_FLUX1_R1 -[hidden]-> PKG_FLUX1_R2
+PKG_FLUX1_R2 -[hidden]-> PKG_FLUX1_R3
+PKG_FLUX1_R3 -[hidden]-> PKG_FLUX1_R4
+PKG_FLUX1_R4 -[hidden]-> PKG_FLUX2_ARCH
+PKG_FLUX2_ARCH -[hidden]-> PKG_FLUX2_R1
+PKG_FLUX2_R1 -[hidden]-> PKG_FLUX2_R2
+PKG_FLUX2_R2 -[hidden]-> PKG_FLUX2_R3
+PKG_FLUX2_R3 -[hidden]-> PKG_FLUX2_R4
+PKG_FLUX2_R4 -[hidden]-> PKG_SUMMARY
+
+@enduml

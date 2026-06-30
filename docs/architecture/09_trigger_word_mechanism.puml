@@ -1,0 +1,104 @@
+@startuml Trigger_Word_Mechanism
+!pragma svgsize 8192
+skinparam dpi 150
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam defaultFontName "Microsoft YaHei"
+skinparam defaultFontSize 11
+skinparam ArrowThickness 2
+skinparam RoundCorner 8
+skinparam PackageBorderThickness 2
+skinparam NoteBackgroundColor #FFFFDD
+skinparam NoteBorderColor #999999
+skinparam MaxMessageSize 500
+skinparam wrapWidth 400
+
+title **触发词机制: 为什么冻结文本编码器后模型仍能识别触发词**\n以及为什么没有触发词也会生成训练对象\n核心: 条件反射, 不是编码\n代码: trainer.py:5556, common.py:4625, collate.py:577-585
+
+' ============================================================
+' 第一部分: 触发词识别的原理
+' ============================================================
+package "**触发词识别原理: 不是编码, 是条件反射**" as PKG_MECHANISM #E3F2FD {
+
+    rectangle "**文本编码器 (冻结)**\n\n\"ohwx\" → E_ohwx = [0.3, -0.7, 0.5, ...]\n\n这组数字永远不变\n因为编码器的权重被冻结\n不接受梯度更新" as FROZEN_TE #BBDEFB
+
+    rectangle "**训练前的 UNet/Transformer**\n\nW_k · E_ohwx = [0.1, 0.0, -0.2, ...]\nW_v · E_ohwx = [0.0, 0.1, -0.1, ...]\n\n→ 无意义的视觉特征\n→ UNet 不认识这组数字\n→ 生成随机内容" as BEFORE_TRAIN #E3F2FD
+
+    rectangle "**训练后的 UNet/Transformer**\n\nW'_k · E_ohwx = [0.8, 0.6, 0.9, ...]\nW'_v · E_ohwx = [0.7, 0.5, 0.8, ...]\n\n→ 携带训练人物视觉特征的 K/V\n→ UNet 对这组数字产生特定反应\n→ 生成训练的那个人物" as AFTER_TRAIN #90CAF9
+
+    FROZEN_TE --> BEFORE_TRAIN : "同一个 E_ohwx"
+    FROZEN_TE --> AFTER_TRAIN : "同一个 E_ohwx"
+
+    note right of AFTER_TRAIN
+      **变化的不是 E_ohwx (输入)**
+      **变化的是 W_k, W_v (权重)**
+
+      这就像巴甫洛夫的狗:
+      铃声(E_ohwx)没变,
+      变的是狗的神经回路(W)
+    end note
+}
+
+' ============================================================
+' 第二部分: 为什么选罕见词做触发词
+' ============================================================
+package "**为什么选罕见词做触发词**" as PKG_RARE #FFF3E0 {
+
+    rectangle "**\"woman\" 的 embedding**\n\n预训练时见过数百万次\nUNet 对它有**强既有关联**\n(通用女性特征)\n\n训练你的人物 =\n覆盖旧关联 = 困难\n且会污染\"woman\"的通用含义" as COMMON_WORD #FFE0B2
+
+    rectangle "**\"ohwx\" 的 embedding**\n\n预训练时几乎没见过\nUNet 对它**接近随机响应**\n(白纸一张)\n\n训练你的人物 =\n在白纸上画画 = 容易\n且不影响其他词的含义" as RARE_WORD #FFCC80
+
+    note bottom of PKG_RARE
+      **从能量地形角度:**
+
+      "woman" → 深吸引盆地, 改写需要大梯度, 大步数
+      "ohwx"  → 平坦区域, 微小梯度就能建立新的吸引盆地
+
+      这就是为什么社区推荐 "ohwx", "sks" 等无意义token
+    end note
+}
+
+' ============================================================
+' 第三部分: 为什么没有触发词也会泄漏
+' ============================================================
+package "**为什么没有触发词也会生成训练对象**" as PKG_LEAK #FFEBEE {
+
+    rectangle "**原因1: 非文本层的偏移**\n\nbackward() 更新**所有**可训练参数\n//trainer.py:5556//\n\n包括与标签毫无关系的层:\n• SDXL: conv_in, ResNet, Self-Attention(attn1), FFN, conv_out\n• FLUX: x_embedder, to_q/k/v(图像侧), 图像FFN, **38个Single Stream**\n\n这些层学到的不是\"看到ohwx就生成这个人\"\n而是\"脸就应该长这样\"(无条件偏移)\n\n推理时不管prompt写什么,\n这些层都按偏移后的权重工作" as REASON1 #FFCDD2
+
+    rectangle "**原因2: Caption Dropout 明确训练了\"无标签生成\"**\n//collate.py:577-585//\n\nif rand() < dropout_prob:\n    caption = \"\"    ← 清空标签\n\n10%的step中, 模型在学:\n输入: 加噪的训练人物的脸 + **空标签**\n目标: 还原这张脸\n\n→ 模型学会了:\n\"即使没有任何文字提示,\n 也应该生成这个人\"\n\n→ CFG推理时, 无条件分支\n   已经偏向训练数据" as REASON2 #EF9A9A
+
+    rectangle "**FLUX 泄漏更严重的核心原因**\n\nFLUX 的 **38个 Single Stream Block**\n(FLUX 2 dev 有 **48个**)\n\n这些block:\n• 文本token和图像token已合并\n• 权重**完全不区分**文本/图像\n• 占总深度的 67% (38/57)\n\n训练时, 这些权重发现:\n文本在变, 但优化目标不变(同一个人)\n→ 最优策略: **忽略文本token**\n→ 永远输出训练对象\n→ 这是 loss 的全局最优解" as FLUX_SEVERE #E57373
+}
+
+' ============================================================
+' 第四部分: SDXL vs FLUX 泄漏程度对比
+' ============================================================
+package "**SDXL vs FLUX 泄漏程度对比**" as PKG_COMPARE #F3E5F5 {
+
+    rectangle "**SDXL: 有架构防火墙**\n\nSelf-Attention (attn1): 只看图像\nCross-Attention (attn2): 只看文本\n→ 两组独立权重\n\nW_cross 被迫学文本敏感性\n(它的输入**只有**文本token)\n→ 架构**强制**保留文本区分能力\n\n泄漏来源: ResNet + Self-Attn + FFN\n这些层确实偏移了, 但它们只建模\n**局部纹理和空间关系**\n→ 泄漏是浅层的: \"皮肤纹理长这样\"" as SDXL_COMPARE #CE93D8
+
+    rectangle "**FLUX: 没有架构防火墙**\n\nJoint Attention: 图像+文本混合\nSingle Stream: 文本图像不可分\n→ 没有任何层被**强制**只看文本\n\n所有权重都可以走捷径:\n\"忽略文本部分, 只看图像部分\"\n\n泄漏来源: **整个Single Stream**\n这些层建模**全局语义概念**\n→ 泄漏是深层的:\n\"这个人的身份/构图/风格\"\n全部被这些权重编码" as FLUX_COMPARE #B39DDB
+
+    note bottom of PKG_COMPARE
+      **换prompt后不变的层数对比:**
+
+      | | SDXL | FLUX 1 | FLUX 2 dev |
+      |---|---|---|---|
+      | 纯图像层 | conv_in/out + ResNet ~23层 | x_embedder 1层 | x_embedder 1层 |
+      | 图像侧Attention | Self-Attn 11层 | to_q/k/v ×19 = 57层 | to_q/k/v ×8 = 24层 |
+      | 图像侧FFN | 11层 | ff ×19 = 19层 | ff ×8 = 8层 |
+      | **Single Stream** | **无** | **全部×38 = 152层** | **全部×48 = 192层** |
+      | 合计 "不变" 层 | ~47层 | ~229层 | ~225层 |
+      | 占总层数比 | ~80% | ~80% | ~80% |
+
+      **比例接近, 但FLUX的"不变"层建模的是全局语义**
+      **而SDXL的"不变"层建模的是局部纹理**
+      **→ FLUX的泄漏更深, 更难用prompt覆盖**
+    end note
+}
+
+PKG_MECHANISM -[hidden]-> PKG_RARE
+PKG_RARE -[hidden]-> PKG_LEAK
+PKG_LEAK -[hidden]-> PKG_COMPARE
+
+@enduml

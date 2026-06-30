@@ -1,0 +1,54 @@
+\contentsline {section}{\numberline {1}结论的三层分级}{4}{section.1}%
+\contentsline {section}{\numberline {2}基本对象}{4}{section.2}%
+\contentsline {section}{\numberline {3}KL-RLHF 的严格残差形式}{5}{section.3}%
+\contentsline {subsection}{\numberline {3.1}Gibbs 闭式解}{5}{subsection.3.1}%
+\contentsline {subsection}{\numberline {3.2}残差 reward 的精确命题}{6}{subsection.3.2}%
+\contentsline {section}{\numberline {4}桥一：SFT / 数据微调作为 Inverse RLHF}{6}{section.4}%
+\contentsline {subsection}{\numberline {4.1}密度比 reward}{6}{subsection.4.1}%
+\contentsline {subsection}{\numberline {4.2}社区数据与用户数据的势能}{7}{subsection.4.2}%
+\contentsline {section}{\numberline {5}桥二：FM 回归作为 Path-KL 投影}{7}{section.5}%
+\contentsline {subsection}{\numberline {5.1}路径空间 KL}{7}{subsection.5.1}%
+\contentsline {subsection}{\numberline {5.2}确定性 FM 的桥：vanishing-noise 与 transport-action}{8}{subsection.5.2}%
+\contentsline {section}{\numberline {6}可训练子空间与投影算子}{8}{section.6}%
+\contentsline {subsection}{\numberline {6.1}局部线性化}{9}{subsection.6.1}%
+\contentsline {subsection}{\numberline {6.2}可达函数空间}{9}{subsection.6.2}%
+\contentsline {section}{\numberline {7}核心递推}{10}{section.7}%
+\contentsline {subsection}{\numberline {7.1}线性叠加何时成立}{10}{subsection.7.1}%
+\contentsline {subsection}{\numberline {7.2}路径依赖}{10}{subsection.7.2}%
+\contentsline {section}{\numberline {8}平滑边缘上的景观递推}{10}{section.8}%
+\contentsline {subsection}{\numberline {8.1}Reweight-then-smooth 与 smooth-then-reweight 不交换}{10}{subsection.8.1}%
+\contentsline {subsection}{\numberline {8.2}Cumulant 展开}{10}{subsection.8.2}%
+\contentsline {subsection}{\numberline {8.3}景观曲率递推}{11}{subsection.8.3}%
+\contentsline {section}{\numberline {9}Posterior Score Covariance 的正确位置}{11}{section.9}%
+\contentsline {subsection}{\numberline {9.1}高斯混合 Hessian 分解}{11}{subsection.9.1}%
+\contentsline {subsection}{\numberline {9.2}Probability Flow Jacobian 的稳健表述}{11}{subsection.9.2}%
+\contentsline {subsection}{\numberline {9.3}进入训练递推的路径}{11}{subsection.9.3}%
+\contentsline {section}{\numberline {10}谱坐标下的可达性递推}{11}{section.10}%
+\contentsline {section}{\numberline {11}对齐税}{12}{section.11}%
+\contentsline {section}{\numberline {12}Jet-FM / 扰动训练的位置}{13}{section.12}%
+\contentsline {subsection}{\numberline {12.1}扰动 $\approx $ Sobolev 投影}{13}{subsection.12.1}%
+\contentsline {section}{\numberline {13}多阶段中每一阶段改变了什么}{13}{section.13}%
+\contentsline {section}{\numberline {14}四条核心命题}{14}{section.14}%
+\contentsline {section}{\numberline {15}第一部分小结：无条件框架}{14}{section.15}%
+\contentsline {section}{\numberline {16}联合条件测度与 fiberwise gauge}{14}{section.16}%
+\contentsline {subsection}{\numberline {16.1}对象：一族条件分布，提升为联合测度}{14}{subsection.16.1}%
+\contentsline {subsection}{\numberline {16.2}Fiberwise gauge：归一化是每个 fiber 上的约束}{15}{subsection.16.2}%
+\contentsline {section}{\numberline {17}条件切空间与残差}{15}{section.17}%
+\contentsline {subsection}{\numberline {17.1}切空间：残差是条件密度流的切向量}{15}{subsection.17.1}%
+\contentsline {subsection}{\numberline {17.2}残差：自动吸收 fiberwise 归一化}{15}{subsection.17.2}%
+\contentsline {section}{\numberline {18}条件残差投影递推（主递推）}{16}{section.18}%
+\contentsline {section}{\numberline {19}无条件 / 对比分解}{16}{section.19}%
+\contentsline {subsection}{\numberline {19.1}caption-invariant 子空间}{16}{subsection.19.1}%
+\contentsline {section}{\numberline {20}Prompt 可控性：干预响应算子}{17}{section.20}%
+\contentsline {section}{\numberline {21}Caption dropout：腐化通道与互信息}{17}{section.21}%
+\contentsline {section}{\numberline {22}架构：Jacobian range 与投影交换子}{18}{section.22}%
+\contentsline {subsection}{\numberline {22.1}firewall $=$ 投影交换子近似为零}{18}{subsection.22.1}%
+\contentsline {subsection}{\numberline {22.2}SDXL / FLUX 的区别是可测命题}{18}{subsection.22.2}%
+\contentsline {section}{\numberline {23}可辨识性：caption $\sigma $-代数与识别算子}{19}{section.23}%
+\contentsline {section}{\numberline {24}衰退矩阵 $=$ 三算子的组合}{20}{section.24}%
+\contentsline {section}{\numberline {25}两阶段对齐税与交叉项}{21}{section.25}%
+\contentsline {section}{\numberline {26}条件扩散 / Flow Matching：文本作为静态变量}{22}{section.26}%
+\contentsline {section}{\numberline {27}统一主定理}{22}{section.27}%
+\contentsline {subsection}{\numberline {27.1}对象词典}{24}{subsection.27.1}%
+\contentsline {subsection}{\numberline {27.2}框架的逻辑链}{24}{subsection.27.2}%
+\contentsline {section}{\numberline {28}补强要点：原框架跳跃的修补}{24}{section.28}%

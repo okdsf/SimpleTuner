@@ -1,0 +1,918 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{mathtools}
+\usepackage{bm}
+\usepackage{geometry}
+\geometry{margin=2.4cm}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{xeCJK}
+\setCJKmainfont{SimSun}
+
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{corollary}[theorem]{Corollary}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{remark}[theorem]{Remark}
+\newtheorem{caveat}[theorem]{Caveat}
+
+\DeclareMathOperator{\Cov}{Cov}
+\DeclareMathOperator{\Var}{Var}
+\DeclareMathOperator{\tr}{tr}
+\DeclareMathOperator{\KL}{KL}
+\DeclareMathOperator{\id}{id}
+
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Prob}{\mathbb{P}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\cD}{\mathcal{D}}
+\newcommand{\cL}{\mathcal{L}}
+\newcommand{\cH}{\mathcal{H}}
+\newcommand{\cN}{\mathcal{N}}
+\newcommand{\cE}{\mathcal{E}}
+\newcommand{\cF}{\mathcal{F}}
+\newcommand{\cS}{\mathcal{S}}
+\newcommand{\cC}{\mathcal{C}}
+\newcommand{\cP}{\mathcal{P}}
+\newcommand{\cR}{\mathcal{R}}
+\newcommand{\cI}{\mathcal{I}}
+\newcommand{\cU}{\mathcal{U}}
+\newcommand{\cV}{\mathcal{V}}
+\newcommand{\cK}{\mathcal{K}}
+\newcommand{\cA}{\mathcal{A}}
+\newcommand{\cT}{\mathcal{T}}
+\newcommand{\cX}{\mathcal{X}}
+\newcommand{\ProjectOp}{\Pi}
+\newcommand{\uu}{\mathrm{u}}
+\newcommand{\cc}{\mathrm{c}}
+\newcommand{\nul}{\varnothing}
+\newcommand{\Range}{\operatorname{Range}}
+\newcommand{\Center}{\mathcal{C}}
+
+\title{\textbf{多阶段对齐的残差势能投影框架} \\[6pt]
+\large 从 KL-RLHF 闭式解到 Posterior Cumulant 景观递推 \\[4pt]
+\normalsize 统一 LLM 对齐与扩散 / Flow Matching 后微调}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+本文给出多阶段微调的统一数学框架。\textbf{多阶段 RLHF / SFT / FM 后微调是一个"目标势能 $-$ 当前势能 $-$ 可达投影 $-$ 路径投影 $-$ 景观递推"的过程}。要点如下：
+\begin{enumerate}[label=(\arabic*),nosep]
+\item 以累计对齐势能 $A_n := \log(dP_n/dP_0)$ 把残差 reward 写成精确命题；
+\item 两座桥把工程对象接入 KL 框架：SFT 经由 \emph{inverse RLHF}（密度比诱导 reward），FM 经由 \emph{path-KL 投影}进入路径空间；
+\item 从局部线性化定义投影算子 $\ProjectOp_{\cH_{n+1}}^{M_n,\lambda}$，用 LoRA 方向级可达性 $\chi_k$ 刻画低秩约束；
+\item 平滑边缘上的势能递推取 posterior log-moment generating function（cumulant 展开）的形式；
+\item Jet-FM 扰动训练作用在 FM 投影阶段的几何度量上，不改变 Gibbs target。
+\end{enumerate}
+
+\medskip
+\noindent\fbox{\parbox{0.96\textwidth}{%
+\textbf{核心递推}：
+$\displaystyle
+A_{n+1}(z) = A_n(z) + \eta_{n+1}\,\ProjectOp_{\cH_{n+1}}^{M_n,\lambda}\!\bigl[U_{n+1}^*(z) - A_n(z)\bigr] + \cE_{n+1}(z),
+$
+\\[2pt]
+其中 $z$ 可为 LLM 输出 $(c,y)$ 或扩散状态 $x$；$\cE_{n+1}$ 收集非线性、有限步、采样误差。
+}}
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+% ============================================================
+\section{基本对象}
+\label{sec:objects}
+% ============================================================
+
+令生成对象为 $z$。在语言模型中 $z=(c,y)$；在图像生成模型中 $z=x_0$ 或整条路径 $X_{0:1}$。
+
+给定基座分布 $P_0$，第 $n$ 阶段后的模型分布为 $P_n$。假设 $P_n \ll P_0$。
+
+\begin{definition}[累计对齐势能]
+\begin{equation}\label{eq:An}
+A_n(z) := \log\frac{dP_n}{dP_0}(z).
+\end{equation}
+$A_n$ 不是 reward，而是模型从 $P_0$ 到 $P_n$ 的\textbf{全部累计 log-density 偏移}，记录了前面所有 SFT、RLHF、DPO、LoRA、FM 后微调共同刻入的分布性变化。初始条件 $A_0 \equiv 0$。
+\end{definition}
+
+\begin{definition}[目标势能与残差势能]
+若第 $n{+}1$ 阶段存在理想目标分布 $Q_{n+1}^*$ 且 $Q_{n+1}^* \ll P_0$，定义：
+\begin{align}
+U_{n+1}^*(z) &:= \log\frac{dQ_{n+1}^*}{dP_0}(z), \label{eq:Ustar}\\[4pt]
+G_{n+1}(z) &:= U_{n+1}^*(z) - A_n(z). \label{eq:residual}
+\end{align}
+$G_{n+1}$ 是\textbf{残差势能}——当前模型到目标还差多少。
+\end{definition}
+
+% ============================================================
+\section{KL-RLHF 的严格残差形式}
+\label{sec:kl_rlhf}
+% ============================================================
+
+\subsection{Gibbs 闭式解}
+
+以 $P_n$ 为 reference 的 KL-regularized alignment：
+\begin{equation}\label{eq:kl_obj}
+P^* = \arg\max_P\;\bigl\{\E_P[R(z)] - \beta\,\KL(P\|P_n)\bigr\}.
+\end{equation}
+
+标准变分计算给出：
+\begin{equation}\label{eq:gibbs}
+\frac{dP^*}{dP_n}(z) \propto \exp\!\bigl(R(z)/\beta\bigr).
+\end{equation}
+
+因此：
+\begin{equation}\label{eq:gibbs_log}
+\log\frac{dP^*}{dP_0}(z) = A_n(z) + \frac{R(z)}{\beta} + \text{const}.
+\end{equation}
+
+\subsection{残差 reward 的精确命题}
+
+若希望本阶段的理想终点是 $Q_{n+1}^*$，即 $\log(dQ_{n+1}^*/dP_0) = U_{n+1}^*$，则由~\eqref{eq:gibbs_log}：
+
+\begin{equation}\label{eq:ideal_reward}
+\boxed{
+\frac{R_{n+1}^{\mathrm{ideal}}(z)}{\beta_{n+1}} = U_{n+1}^*(z) - A_n(z) = G_{n+1}(z)
+}
+\end{equation}
+
+\begin{theorem}[残差 reward 定理]\label{thm:residual_reward}
+若第 $n{+}1$ 阶段的目标是把 $P_n$ 推向 $Q_{n+1}^*$（相对于 $P_0$ 定义），则以 $P_n$ 为 reference 的 KL-RLHF ideal reward 必须等价于目标势能与当前势能之差。这不是无条件成立的递推，而是在"\textbf{存在绝对目标势能 $U^*$}"这一建模假设下的精确命题。
+\end{theorem}
+
+% ============================================================
+\section{桥一：SFT / 数据微调作为 Inverse RLHF}
+\label{sec:inverse_rlhf}
+% ============================================================
+
+\subsection{密度比 reward}
+
+监督微调通常最小化 $\min_\theta \KL(Q_\cD \| P_\theta)$，其中 $Q_\cD$ 是数据分布。若 $Q_\cD \ll P_0$，定义数据诱导势能：
+\begin{equation}\label{eq:data_potential}
+U_\cD(z) := \log\frac{dQ_\cD}{dP_0}(z).
+\end{equation}
+
+令 $R_\cD^{(\beta)}(z) := \beta\,U_\cD(z)$。代入 Gibbs 解~\eqref{eq:gibbs}（以 $P_0$ 为 reference）：
+\[
+\frac{dP^*}{dP_0}(z) \propto \exp\!\bigl(U_\cD(z)\bigr) = \frac{dQ_\cD}{dP_0}(z),
+\]
+故 $P^* = Q_\cD$。
+
+\begin{proposition}[Inverse alignment bridge]\label{prop:inverse}
+SFT 的 population optimum 可被反解释为 KL-RLHF 的 Gibbs optimum。有限模型下，实际 SFT 是该 target 在模型族中的 KL 投影。这不是狭义"人类反馈"，而是\textbf{数据诱导的 KL 分布对齐}。
+\end{proposition}
+
+\begin{caveat}[经验分布的平滑化]\label{cav:smoothing}
+若 $Q_\cD$ 是有限样本经验分布 $\widehat{q}_N = \frac{1}{N}\sum_i \delta_{x^{(i)}}$，则 $\log(dQ_\cD/dP_0)$ 不良定义。必须先引入平滑核 $K_t(x\mid z)$，定义平滑边缘 $Q_{\cD,t}(x) = \int K_t(x\mid z)\,Q_\cD(dz)$，再讨论 score、Hessian 与 posterior cumulant。这一步是将经验数据接入连续几何的必要桥梁。
+\end{caveat}
+
+\subsection{社区数据与用户数据的势能}
+
+社区全量微调（inverse RLHF$_1$）：
+\begin{equation}\label{eq:U_com}
+U_{\text{com}}(z) = \log\frac{dQ_{\text{com}}}{dP_{\text{base}}}(z).
+\end{equation}
+
+用户后微调（inverse RLHF$_2$，以 $P_{\text{com}}$ 为 reference）：
+\begin{equation}\label{eq:U_user}
+R_{\text{user}}(z)/\beta_2 = U_{\text{user}}^*(z) - A_1(z),\qquad A_1 = \log\frac{dP_{\text{com}}}{dP_{\text{base}}}.
+\end{equation}
+
+若二者都是精确密度比且模型族无限，则两阶段望远镜式抵消，终点即 $Q_{\text{user}}$。保留非平凡交互时，reward 是\textbf{由数据、偏好、训练机制共同诱导的偏好势能}，它一般不等于精确密度比。
+
+% ============================================================
+\section{桥二：FM 回归作为 Path-KL 投影}
+\label{sec:path_kl}
+% ============================================================
+
+\subsection{路径空间 KL}
+
+给定目标分布 $Q^*$，选择 interpolant 或扩散桥得到路径测度 $Q^{\text{path}}$，边缘为 $Q_t$，$t\in[0,1]$。设：
+\begin{align}
+Q &:\; dX_t = u_Q(X_t,t)\,dt + \sigma(t)\,dW_t, \\
+P_\theta &:\; dX_t = v_\theta(X_t,t)\,dt + \sigma(t)\,dW_t.
+\end{align}
+
+在 Girsanov 条件下：
+\begin{equation}\label{eq:path_kl}
+\KL(Q^{\text{path}}\|P_\theta^{\text{path}}) = \text{boundary term} + \frac{1}{2}\int_0^1 \E_{Q_t}\!\bigl[\|\sigma(t)^{-1}(u_Q - v_\theta)\|^2\bigr]\,dt.
+\end{equation}
+
+若边界分布固定，boundary term 对 $\theta$ 是常数。因此：
+\begin{equation}\label{eq:fm_as_kl}
+\boxed{
+\theta^* = \arg\min_\theta\;\KL(Q^{\text{path}}\|P_\theta^{\text{path}})
+}
+\end{equation}
+
+\begin{caveat}[FM 损失与 path-KL 的对应条件]
+标准 FM 损失 $\int \E_{Q_t}\|u_Q - v_\theta\|^2\,dt$ 只有在 $\sigma(t)$ 常数或损失权重已吸收 $\sigma(t)^{-2}$ 时，才与 path-KL 严格一致。
+\end{caveat}
+
+\begin{remark}[严谨的桥链]
+不能直接说 reward-KL 给出 FM 目标。完整链条是：
+\[
+\text{KL-RLHF / inverse RLHF} \;\Rightarrow\; Q^* \;\Rightarrow\; Q^{\text{path}} \;\Rightarrow\; \text{path-KL projection} \;\Rightarrow\; \text{FM regression}.
+\]
+\end{remark}
+
+% ============================================================
+\section{可训练子空间与投影算子}
+\label{sec:projection}
+% ============================================================
+
+真实训练不可能直接完成 $A_{n+1} = U_{n+1}^*$。需要把理想残差 $G_{n+1} = U_{n+1}^* - A_n$ 投影到可达函数空间。
+
+\subsection{局部线性化}
+
+设当前参数为 $\theta_n$，第 $n{+}1$ 阶段可训练参数子空间为 $S_{n+1} \subseteq \R^d$（如 LoRA 的 rank-$r$ 子空间）。局部线性化：
+\begin{equation}\label{eq:linearize}
+A_{\theta_n + \delta\theta}(z) \approx A_n(z) + J_n(z)\,\delta\theta,
+\end{equation}
+其中 $J_n(z) := \nabla_\theta A_\theta(z)\big|_{\theta_n}$ 是 log-density potential Jacobian。
+
+\subsection{可达函数空间}
+
+\begin{definition}[可达函数空间与投影算子]
+定义可达函数空间：
+\begin{equation}\label{eq:reachable}
+\cH_{n+1} := \{h(z) = J_n(z)\,\delta\theta : \delta\theta \in S_{n+1}\}.
+\end{equation}
+
+给定由当前模型、数据和优化器诱导的二次度量 $M_n$（Fisher / NTK / loss Hessian / $L^2(P_n)$），定义投影：
+\begin{equation}\label{eq:projection}
+\ProjectOp_{\cH_{n+1}}^{M_n,\lambda}\,G := \arg\min_{h \in \cH_{n+1}} \|G - h\|_{M_n}^2 + \lambda\|\delta\theta\|^2.
+\end{equation}
+\end{definition}
+
+其中 $\lambda\|\delta\theta\|^2$ 吸收了 weight decay、有限步优化的隐式正则、以及 LoRA 秩约束的 Lagrange 对偶。
+
+% ============================================================
+\section{核心递推}
+\label{sec:recursion}
+% ============================================================
+
+\begin{theorem}[多阶段对齐的残差投影递推]\label{thm:recursion}
+在局部二阶近似下，有效更新为：
+\begin{equation}\label{eq:update}
+\Delta A_{n+1} = \eta_{n+1}\,\ProjectOp_{\cH_{n+1}}^{M_n,\lambda}\!\bigl(U_{n+1}^* - A_n\bigr).
+\end{equation}
+
+完整递推：
+\begin{equation}\label{eq:full_recursion}
+\boxed{
+A_{n+1}(z) = A_n(z) + \eta_{n+1}\,\ProjectOp_{\cH_{n+1}}^{M_n,\lambda}\!\bigl[U_{n+1}^*(z) - A_n(z)\bigr] + \cE_{n+1}(z)
+}
+\end{equation}
+其中 $\cE_{n+1}$ 收集非线性误差、有限步优化误差、采样误差和 reward/model mismatch。
+\end{theorem}
+
+\subsection{线性叠加何时成立}
+
+当且仅当以下四个条件\textbf{同时}满足时，递推退化为线性叠加 $A_N = \sum_i R_i/\beta_i$：
+\begin{enumerate}[label=(C\arabic*),nosep]
+\item $U_i^*$ 不依赖 $P_{i-1}$（reward 固定）；
+\item $\ProjectOp_i = \id$（模型表达能力无限且无约束）；
+\item $\cE_i = 0$（优化精确收敛）；
+\item $\eta_i = 1/\beta_i$（学习率与 KL 温度匹配）。
+\end{enumerate}
+
+真实后微调中 (C1)--(C4) 通常不成立，因此线性叠加只是一阶近似。
+
+\subsection{路径依赖}
+
+由于 $M_n$、$\cH_{n+1}$、甚至 $U_{n+1}^*$ 都依赖当前模型 $P_n$，一般有：
+\begin{equation}\label{eq:noncommute}
+\boxed{
+\text{Train}_2 \circ \text{Train}_1 \;\neq\; \text{Train}_1 \circ \text{Train}_2
+}
+\end{equation}
+
+路径依赖来自三个层面：$A_n$ 改变残差；$P_n$ 改变训练几何 $M_n$；$\theta_n$ 改变可达子空间 $\cH_{n+1}$。
+
+% ============================================================
+\section{平滑边缘上的景观递推}
+\label{sec:landscape}
+% ============================================================
+
+\subsection{Reweight-then-smooth 与 smooth-then-reweight 不交换}
+
+设从 $z$ 到 $x_t$ 的平滑核为 $K_t(x\mid z)$。零时刻 Gibbs reweighting 与扩散平滑一般不交换。定义平滑边缘势能：
+\begin{equation}\label{eq:Bt}
+B_{n,t}(x) := \log\frac{p_{n,t}(x)}{p_{0,t}(x)},\qquad p_{n,t}(x) = \int K_t(x\mid z)\,dP_n(z).
+\end{equation}
+
+若零时刻更新为 $dP_{n+1}(z) \propto e^{\Delta A_{n+1}(z)}\,dP_n(z)$，则平滑边缘势能增量为\textbf{后验 log-moment generating function}：
+\begin{equation}\label{eq:mgf}
+\boxed{
+B_{n+1,t}(x) - B_{n,t}(x) = \log\E_{P_n(z\mid X_t=x)}\!\bigl[e^{\Delta A_{n+1}(z)}\bigr] - \text{const}
+}
+\end{equation}
+
+\subsection{Cumulant 展开}
+
+对~\eqref{eq:mgf}的右端做 cumulant 展开：
+\begin{equation}\label{eq:cumulant_expansion}
+\log\E\!\bigl[e^{\Delta A}\mid X_t{=}x\bigr] = \underbrace{\E[\Delta A\mid x]}_{\kappa_1} + \frac{1}{2}\underbrace{\Var(\Delta A\mid x)}_{\kappa_2} + \frac{1}{6}\underbrace{\kappa_3(\Delta A\mid x)}_{\kappa_3} + \cdots
+\end{equation}
+
+因此平滑边缘的严格递推是：
+\begin{equation}\label{eq:landscape_recursion}
+B_{n+1,t}(x) = B_{n,t}(x) + \sum_{k=1}^{\infty} \frac{1}{k!}\,\kappa_{n,t}^{(k)}(x) - \text{const},
+\end{equation}
+其中 $\kappa_{n,t}^{(k)}(x)$ 是 $\Delta A_{n+1}(z)$ 在后验 $P_n(z\mid X_t{=}x)$ 下的第 $k$ 阶 cumulant。
+
+\subsection{景观曲率递推}
+
+对 $x$ 求 Hessian：
+\begin{equation}\label{eq:curvature_recursion}
+\boxed{
+K_{n+1,t}(x) = K_{n,t}(x) + \nabla_x^2 \log\E_{P_n(z\mid X_t=x)}\!\bigl[e^{\Delta A_{n+1}(z)}\bigr]
+}
+\end{equation}
+其中 $K_{n,t}(x) := \nabla_x^2 \log p_{n,t}(x)$。
+
+小步长近似：
+\begin{equation}\label{eq:small_step}
+K_{n+1,t} \approx K_{n,t} + \nabla_x^2 \E[\Delta A_{n+1}\mid X_t] + \tfrac{1}{2}\nabla_x^2 \Var(\Delta A_{n+1}\mid X_t) + \cdots
+\end{equation}
+
+\begin{remark}[协方差进入景观的路径]
+$K_{n+1} = K_n + \eta\nabla^2 r$ 是~\eqref{eq:small_step}只取 $\kappa_1$ 项的近似；完整递推还含方差项与更高阶 cumulant。协方差场要先经 reweighting $\to$ 后验 cumulant $\to$ Hessian 化，才进入景观更新。
+\end{remark}
+
+% ============================================================
+\section{Posterior Score Covariance 的正确位置}
+\label{sec:psc}
+% ============================================================
+
+\subsection{高斯混合 Hessian 分解}
+
+对经验数据经高斯平滑得到的混合密度 $p_t(x) = \frac{1}{N}\sum_i p_t^{(i)}(x)$，$p_t^{(i)}(x) = \cN(\alpha_t x^{(i)}, \sigma_t^2 I)$，后验权重 $w_i(x,t) = p_t^{(i)}(x)/\sum_k p_t^{(k)}(x)$，条件 score $s_i(x,t) = \nabla_x\log p_t^{(i)}(x)$：
+
+\begin{equation}\label{eq:hessian_decomp}
+\boxed{
+\nabla_x^2\log p_t(x) = \underbrace{-\sigma_t^{-2}I}_{\text{空间常数}} + \underbrace{\Cov_w(s_I)}_{\text{全部空间变化}}
+}
+\end{equation}
+
+其中 $\Cov_w(s_I) = \sum_i w_i\,\bar{s}_i\bar{s}_i^\top \succeq 0$，$\bar{s}_i = s_i - \sum_k w_k s_k$。
+
+\subsection{Probability Flow Jacobian 的稳健表述}
+
+许多 score-based probability flow ODE 共享形式 $u_t(x) = a(t)x + b(t)\nabla_x\log p_t(x) + c(t)$。因此：
+\begin{equation}\label{eq:jacobian_general}
+\nabla_x u_t(x) = \bigl[a(t) - b(t)\sigma_t^{-2}\bigr]I + b(t)\,\Cov_w(s_I).
+\end{equation}
+
+去掉空间常数项：
+\begin{equation}\label{eq:jacobian_cov}
+\boxed{
+\nabla_x u_t(x) - \text{(space constant)} = b(t)\,\Cov_w(s_I)
+}
+\end{equation}
+
+\begin{corollary}[Frobenius 正比性]
+若 $b(t) \neq 0$ 且场非退化，则 $\|\nabla_x u_t - \text{const}\|_F$ 与 $\|\Cov_w(s_I)\|_F$ 逐点成比例。这避免了对特定 noise schedule 系数的过度承诺。
+\end{corollary}
+
+\subsection{进入训练递推的路径}
+
+Posterior score covariance 沿这条链进入训练递推：
+\[
+\Cov_w(s_I) \;\Rightarrow\; K_{n+1,t}^* \;\Rightarrow\; K_{n+1,t}^* - K_{n,t} \;\Rightarrow\; \ProjectOp_{n+1}(K_{n+1,t}^* - K_{n,t}) \;\Rightarrow\; K_{n+1,t}.
+\]
+
+% ============================================================
+\section{谱坐标下的可达性递推}
+\label{sec:spectral}
+% ============================================================
+
+在局部区域内，设当前景观曲率为 $K_{n,t} = \sum_k a_{n,k}\,v_{n,k}v_{n,k}^\top$，目标为 $K_{n+1,t}^* = \sum_k a_{n+1,k}^*\,v_{n,k}v_{n,k}^\top + \text{offdiag}$。
+
+\begin{proposition}[谱递推]\label{prop:spectral}
+若 $K_n$ 与 $K_{n+1}^*$ 近似共谱，$\ProjectOp_{n+1}$ 在该谱基下近似对角，且更新足够小（特征方向旋转可忽略），则：
+\begin{equation}\label{eq:spectral}
+\boxed{
+a_{n+1,k} = a_{n,k} + \eta_{n+1}\,\chi_{n+1,k}\,(a_{n+1,k}^* - a_{n,k})
+}
+\end{equation}
+其中 $\chi_{n+1,k} \in [0,1]$ 是第 $k$ 个方向的可达性系数，受数据覆盖、LoRA rank、target modules、NTK/Fisher 谱、优化器和正则化共同影响。
+\end{proposition}
+
+\begin{remark}[LoRA 是方向性投影]
+LoRA 的效果是方向性的：某些方向 $\chi_k \approx 1$（完全可达），另一些 $\chi_k \approx 0$（完全不可达）。它取决于低秩矩阵 $BA$ 的列空间与目标残差在各方向上的对齐程度，因此 $\chi_k$ 沿方向变化，而非一个各向同性的标量。
+\end{remark}
+
+% ============================================================
+\section{对齐税}
+\label{sec:tax}
+% ============================================================
+
+\begin{definition}[对齐税的二次近似]
+假设训练阶段求解局部二次问题~\eqref{eq:projection}，最优可达更新 $h^* = \ProjectOp_{\cH_{n+1}}^{M_n,\lambda}G_{n+1}$。对齐税为：
+\begin{equation}\label{eq:tax}
+\boxed{
+\text{Tax}_{n+1} = \underbrace{\bigl\|(I - \ProjectOp_{\cH_{n+1}}^{M_n})\,G_{n+1}\bigr\|_{M_n}^2}_{\text{不可达残差}} + \underbrace{\lambda\,\langle h^*,\,\Lambda_n\, h^*\rangle}_{\text{景观移动代价}}
+}
+\end{equation}
+\end{definition}
+
+第一项：残差中当前训练机制\textbf{无法学习}的部分（LoRA 秩不够、数据覆盖不足、$\chi_k \approx 0$）。
+第二项：为\textbf{改变已有景观}所需付出的迁移代价（高 $\lambda_{n,k}$ 方向偏移代价高）。
+
+在谱坐标下：
+\begin{equation}\label{eq:tax_spectral}
+\text{Tax}_{n+1} \approx \sum_k (1-\chi_{n+1,k})^2\,g_{n+1,k}^2\,m_{n,k} + \lambda\sum_k \chi_{n+1,k}^2\,g_{n+1,k}^2\,\lambda_{n,k},
+\end{equation}
+其中 $g_{n+1,k} = \langle G_{n+1}, v_{n,k}\rangle_{M_n}$ 是残差在第 $k$ 方向的分量。
+
+% ============================================================
+\section{Jet-FM / 扰动训练的位置}
+\label{sec:jet_fm}
+% ============================================================
+
+扰动训练改变的不是 KL-RLHF 的 Gibbs target，而是 FM 投影阶段的\textbf{几何度量}。
+
+\subsection{扰动 $\approx$ Sobolev 投影}
+
+对输入加小扰动 $\tilde{x} = x + \varepsilon\xi$，$\E[\xi]=0$，$\E[\xi\xi^\top]=I$，Taylor 展开：
+\begin{equation}\label{eq:perturb_taylor}
+\E_\xi\!\bigl[\|v_\theta(\tilde{x}) - u_Q(\tilde{x})\|^2\bigr] = \|v_\theta - u_Q\|^2 + \varepsilon^2\,\|\nabla_x v_\theta - \nabla_x u_Q\|_F^2 + O(\varepsilon^3).
+\end{equation}
+
+因此扰动训练把 FM 投影度量从纯速度空间扩展为速度 $+$ Jacobian 的 Sobolev 型度量：
+\begin{equation}\label{eq:sobolev_projection}
+\ProjectOp^{\text{velocity}} \;\leadsto\; \ProjectOp^{\text{velocity+Jacobian}}.
+\end{equation}
+
+由~\eqref{eq:jacobian_cov}，Jacobian 匹配项直接迫使网络学习 $\Cov_w(s_I)$ 的空间分布。
+
+\begin{remark}
+扰动训练不自动等同于"RLHF$_1$ covariance-aware"，除非训练样本覆盖了 RLHF$_1$ 的高协方差区域，且当前模型 Jacobian 继承了这些结构。
+\end{remark}
+
+% ============================================================
+\section{多阶段中每一阶段改变了什么}
+\label{sec:stages}
+% ============================================================
+
+\begin{table}[htbp]
+\centering
+\caption{多阶段递推中各阶段的作用}
+\label{tab:stages}
+\small
+\begin{tabular}{@{}p{1.6cm}p{4cm}p{4.4cm}p{3.5cm}@{}}
+\toprule
+\textbf{阶段} & \textbf{主要改变} & \textbf{数学对象} & \textbf{风险} \\
+\midrule
+RLHF$_1$ & 建立粗坐标系 & $A_1 = \eta_1\,\ProjectOp_{\cH_1}^{M_0,\lambda}(U_1^*)$ & 粗粒度偏差固化 \\[3pt]
+RLHF$_2$ & 坐标系内条件化细分 & $A_2 = A_1 + \eta_2\,\ProjectOp_{\cH_2}^{M_1,\lambda}(U_2^* - A_1)$ & 子空间太窄$\to$只学表面 \\[3pt]
+RLHF$_3$ & 例外、边界、冲突 & $A_3 = A_2 + \eta_3\,\ProjectOp_{\cH_3}^{M_2,\lambda}(U_3^* - A_2)$ & 规则互相打架 \\[3pt]
+第 $n$ 次+ & 残差收敛或漂移 & $A_{n+1} = A_n + \eta\,\ProjectOp(U^* - A_n) + \cE$ & 遗忘 / 僵化 / 不可达累积 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ============================================================
+\section{四条核心命题}
+\label{sec:propositions}
+% ============================================================
+
+\begin{proposition}[命题 1：Inverse alignment bridge]
+若 $Q_\cD \ll P_0$，则监督数据分布 $Q_\cD$ 可诱导势能 $U_\cD = \log(dQ_\cD/dP_0)$。在无限容量和全局优化下，SFT 的 population target 可被反解释为 KL-RLHF 的 Gibbs optimum。有限模型下，SFT 是该 target 在模型族中的 KL 投影。
+\end{proposition}
+
+\begin{proposition}[命题 2：Residual reward theorem]
+以 $P_n$ 为 reference 的 ideal KL-RLHF reward 满足 $R_{n+1}/\beta_{n+1} = U_{n+1}^* - A_n$。多阶段对齐作用在残差势能上，每一阶段以当前模型为 reference。
+\end{proposition}
+
+\begin{proposition}[命题 3：Projected residual dynamics]
+在局部线性化和二次近似下，有限模型、LoRA、优化器和正则化共同诱导投影 $\ProjectOp_{\cH_{n+1}}^{M_n,\lambda}$。实际更新为~\eqref{eq:full_recursion}。路径依赖来自 $A_n$、$M_n$、$\cH_{n+1}$ 随历史改变。
+\end{proposition}
+
+\begin{proposition}[命题 4：Posterior cumulant landscape recursion]
+平滑边缘上的势能更新不是简单相加，而是后验 log-MGF~\eqref{eq:mgf}。Posterior score covariance 给出目标景观的局部曲率来源~\eqref{eq:hessian_decomp}，但它必须先经残差化、路径构造和训练投影，才进入最终模型~\eqref{eq:curvature_recursion}。
+\end{proposition}
+
+% ============================================================
+\section{第一部分小结：无条件框架}
+\label{sec:conclusion}
+% ============================================================
+
+第一部分给出的层次结构是：
+\[
+\text{目标分布} \;\neq\; \text{训练过程} \;\neq\; \text{模型可达更新} \;\neq\; \text{扩散平滑景观}.
+\]
+它作用在\textbf{无条件}层面——对象是 $z$，没有显式的文本条件 $c$。T2I 的核心是 T$\to$I 的\textbf{条件回归}：模型学的是 $p(x\mid c)$，且架构中\textbf{有的部分看得到文本、有的部分看不到}。第二部分把条件 $c$ 装进框架，并由此推导衰退矩阵。
+
+\bigskip
+\noindent\fbox{\parbox{0.96\textwidth}{%
+\textbf{第一部分一句话}：多阶段对齐在每一阶段把目标势能相对于当前势能取残差，再通过当前模型几何、可训练子空间和路径投影得到有限可达更新；扩散/FM 场景下，该更新在平滑边缘上由 posterior cumulant 控制。
+}}
+
+\bigskip
+\begin{center}
+\rule{0.6\textwidth}{0.8pt}\\[4pt]
+{\Large\textbf{第二部分：条件化 (Text $\to$ Image) 扩展}}\\[2pt]
+{\normalsize 把文本回归装回框架，并推导衰退矩阵}\\[4pt]
+\rule{0.6\textwidth}{0.8pt}
+\end{center}
+
+% ============================================================
+\section{联合条件测度与 fiberwise gauge}
+\label{sec:joint_measure}
+% ============================================================
+
+把文本条件 $c$ 作为测度空间的一部分，在联合条件测度上直接做残差、投影、分解与可辨识性。本节先建立联合测度和它的归一化约束。
+
+\subsection{对象：一族条件分布，提升为联合测度}
+
+设文本空间 $\cC$、图像 latent 空间 $\cX$，固定一个 caption 环境分布 $\rho(dc)$。T2I 模型是一族条件分布 $p_n(dx\mid c)$，提升为联合测度：
+\begin{equation}\label{eq:joint}
+P_n^\rho(dc,dx) = \rho(dc)\,p_n(dx\mid c).
+\end{equation}
+只要 $\rho$ 固定，文本条件就不是附加结构，而是\textbf{生成对象的一部分}。条件累计势能直接定义为二元函数：
+\begin{equation}\label{eq:cond_potential}
+A_n(c,x) := \log\frac{p_n(x\mid c)}{p_0(x\mid c)}.
+\end{equation}
+
+\subsection{Fiberwise gauge：归一化是每个 fiber 上的约束}
+
+势能的 gauge 不是随便加常数。每个 $c$-fiber 上 $p_n(\cdot\mid c)$ 必须归一化，故
+\begin{equation}\label{eq:fiber_gauge}
+\boxed{
+\int_{\cX} \exp\bigl(A_n(c,x)\bigr)\,p_0(dx\mid c) = 1 \qquad \rho\text{-a.e. }c.
+}
+\end{equation}
+第一部分 KL-RLHF 中出现的 $\text{const}(c)$ 不是无害常数，而是\textbf{fiberwise gauge}，必须按 \eqref{eq:fiber_gauge} 统一处理。这是条件化相对无条件框架的第一个本质差别。
+
+% ============================================================
+\section{条件切空间与残差}
+\label{sec:tangent}
+% ============================================================
+
+\subsection{切空间：残差是条件密度流的切向量}
+
+沿某 $c$-fiber 改变 log-density 时，必须保持 $\int p_n(dx\mid c)=1$。因此真正有效的无穷小更新不是任意函数，而是\textbf{条件中心化}后的函数。定义阶段-$n$ 的条件切空间：
+\begin{equation}\label{eq:tangent_space}
+\boxed{
+T_n := \bigl\{\, h(c,x) \;:\; \E_{P_n}\!\bigl[h(C,X)\mid C=c\bigr]=0 \ \ \rho\text{-a.e. }c \,\bigr\}.
+}
+\end{equation}
+条件零均值约束是 \eqref{eq:fiber_gauge} 的切向版本。引入\textbf{条件中心化算子}
+\begin{equation}\label{eq:centering}
+\Center_n[f] := f - \E_{P_n}[f\mid C],\qquad \Center_n: L^2(P_n^\rho)\to T_n.
+\end{equation}
+
+\subsection{残差：自动吸收 fiberwise 归一化}
+
+若本阶段目标为 $Q^*_{n+1}(dx\mid c)$，理想残差应写为\textbf{条件中心化的对数密度比}：
+\begin{equation}\label{eq:cond_residual}
+\boxed{
+g_{n+1}(c,x) = \Center_n\!\left[\log\frac{dQ^*_{n+1}}{dP_n}\right] = \log\frac{q^*_{n+1}(x\mid c)}{p_n(x\mid c)} - \E_{P_n}\!\left[\log\frac{q^*_{n+1}(X\mid C)}{p_n(X\mid C)}\,\middle|\,C=c\right]
+}
+\end{equation}
+故 $g_{n+1}\in T_n$。条件中心化使 $g_{n+1}$ 在每个 caption fiber 上自动吸收归一化常数，不留 gauge 自由度。
+
+% ============================================================
+\section{条件残差投影递推（主递推）}
+\label{sec:cond_recursion}
+% ============================================================
+
+设本阶段可训练参数子空间 $S_{n+1}$。完整模型 Jacobian $J_n(c,x)=\nabla_\theta A_\theta(c,x)|_{\theta_n}$ 经中心化给出线性化可达子空间：
+\begin{equation}\label{eq:reachable_cond}
+\cH_{n+1} := \Range\!\bigl(\Center_n J_n|_{S_{n+1}}\bigr) = \bigl\{\Center_n[J_n(c,x)\,\delta\theta] : \delta\theta\in S_{n+1}\bigr\} \subset T_n.
+\end{equation}
+在 Fisher / $L^2(P_n^\rho)$ / path-Fisher 度量 $M_n$ 下投影（含岭正则 $\lambda$）：
+\begin{equation}\label{eq:cond_projection}
+h^*_{n+1} = \ProjectOp^{M_n,\lambda}_{\cH_{n+1}}\,g_{n+1}.
+\end{equation}
+
+\begin{theorem}[条件残差投影递推]\label{thm:cond_recursion}
+有限步更新在每个 fiber 上为指数倾斜：
+\begin{equation}\label{eq:cond_update}
+\frac{dP_{n+1}(\cdot\mid c)}{dP_n(\cdot\mid c)} \propto \exp\!\bigl(\eta\, h^*_{n+1}(c,\cdot)\bigr),
+\end{equation}
+即
+\begin{equation}\label{eq:cond_A_recursion}
+\boxed{
+A_{n+1}(c,x) = A_n(c,x) + \eta\, h^*_{n+1}(c,x) - \psi_{n+1}(c) + \cE_{n+1}(c,x)
+}
+\end{equation}
+其中 fiberwise 对数配分 $\psi_{n+1}(c) = \log \E_{P_n(\cdot\mid c)}\!\bigl[\exp(\eta\,h^*_{n+1}(c,X))\bigr]$ 自动满足 gauge \eqref{eq:fiber_gauge}，$\cE_{n+1}$ 收集非线性、有限步与采样误差。
+\end{theorem}
+
+\noindent 这是条件版主定理。它\textbf{不需要}空 caption、不需要 CFG、不需要 token、不需要任何 SDXL/FLUX 结构假设。工程细节只通过 $Q^*$、$S_{n+1}$、$J_n$ 三个对象进入。
+
+% ============================================================
+\section{无条件 / 对比分解}
+\label{sec:uc_projection}
+% ============================================================
+
+对所有文本条件共同的图像侧分量，是切空间 $T_n$ 中的一个 Hilbert 正交投影。下面定义这个子空间，并把残差正交分解为图像侧 floor 与文本对比两部分。
+
+\subsection{caption-invariant 子空间}
+
+\begin{definition}[caption-invariant 与对比子空间]
+在 $T_n$ 内定义
+\begin{equation}\label{eq:U_subspace}
+\cU_n := \overline{\bigl\{\, a(X) - \E_{P_n}[a(X)\mid C] \;:\; a\in L^2(P_n^X) \,\bigr\}} \subset T_n,
+\end{equation}
+即所有"图像侧函数经条件中心化"张成的闭子空间——它是对\textbf{所有}文本条件共同施加的图像侧 floor。对比子空间为正交补
+\begin{equation}\label{eq:V_subspace}
+\cV_n := T_n \ominus \cU_n.
+\end{equation}
+\end{definition}
+
+注意 $\cU_n$ 中的元素不是简单的 $a(x)$：条件分布必须在每个 fiber 归一化，故须减去 $\E[a(X)\mid C]$。
+
+\begin{proposition}[残差的正交分解]\label{prop:orthogonal_split}
+任意残差唯一分解
+\begin{equation}\label{eq:g_split}
+\boxed{
+g_{n+1} = g^{\uu}_{n+1} + g^{\cc}_{n+1},\qquad g^{\uu}_{n+1}=\ProjectOp_{\cU_n}g_{n+1},\quad g^{\cc}_{n+1}=(I-\ProjectOp_{\cU_n})g_{n+1}
+}
+\end{equation}
+其中 $\ProjectOp_{\cU_n}$ 是 $M_n$ 下到 $\cU_n$ 的正交投影。
+\end{proposition}
+
+\begin{remark}[caption-invariant 分量与 null-caption fiber]
+caption-invariant 分量是正交投影 $\ProjectOp_{\cU_n}A_n$（残差侧为 $\ProjectOp_{\cU_n}g_{n+1}$）。空 caption 上的求值 $A(x\mid\nul)$ 是 $\nul$ 这一个 fiber 上的 \textbf{null-caption fiber potential}；它与 caption-invariant 分量在一般 $\rho$ 下不重合，两者只在参考测度关于 dropout 对称时才相等。
+\end{remark}
+
+% ============================================================
+\section{Prompt 可控性：干预响应算子}
+\label{sec:response}
+% ============================================================
+
+prompt 对某特征的控制由\textbf{干预响应算子}刻画：改变 caption 时该特征的条件期望如何变化。
+
+\begin{definition}[caption 干预响应]
+给定图像特征 $\phi:\cX\to\R$，定义
+\begin{equation}\label{eq:response_op}
+\cR_n\phi(c,c') := \E_{P_n(\cdot\mid c')}[\phi(X)] - \E_{P_n(\cdot\mid c)}[\phi(X)];
+\end{equation}
+若文本 embedding 连续，则微分响应 $D_c\,\E_{P_n(\cdot\mid c)}[\phi(X)]$。
+\end{definition}
+
+\begin{definition}[prompt-不可约]
+特征 $\phi$ 为 \textbf{prompt-不可约} 当且仅当 $\phi\in\ker\cR_n$，近似意义下 $\|\cR_n\phi\|\approx 0$。
+\end{definition}
+
+\begin{remark}[CFG 与响应算子]
+CFG 采样 $s_{\mathrm{cfg}}=s_\nul+\omega(s_c-s_\nul)$ 是某个特定 sampler 在 score 层面对 $\cR_n$ 的近似放大。一个特征是否 prompt-可控，由 $\cR_n\phi$ 是否显著非零决定。
+\end{remark}
+
+% ============================================================
+\section{Caption dropout：腐化通道与互信息}
+\label{sec:dropout_channel}
+% ============================================================
+
+Caption dropout 是一个作用在文本上的腐化通道：以概率 $p_{\mathrm{drop}}$ 把 caption 替换为 $\nul$。它降低图像与 caption 之间的互信息，从而抬高残差在 caption-invariant 子空间上的投影比例。
+
+\begin{definition}[腐化 caption 通道]
+\begin{equation}\label{eq:dropout_channel}
+\cK(d\tilde c\mid c) = (1-p_{\mathrm{drop}})\,\delta_c(d\tilde c) + p_{\mathrm{drop}}\,\delta_{\nul}(d\tilde c).
+\end{equation}
+训练数据不是原始 $Q(dx,dc)$，而是腐化联合 $\widetilde Q(dx,d\tilde c) = \int Q(dx,dc)\,\cK(d\tilde c\mid c)$。
+\end{definition}
+
+dropout 诱导的目标残差 $\tilde g = \Center_n[\log d\widetilde Q/dP_n^{\tilde\rho}]$，再投影到 $T_n$。
+
+\begin{proposition}[dropout $=$ 降低互信息 $\Rightarrow$ 提高 caption-invariant 投影比例]\label{prop:dropout_mi}
+腐化通道降低 $X$ 与 $\tilde C$ 之间的互信息：
+\begin{equation}\label{eq:mi_drop}
+I_{\widetilde Q}(X;\tilde C) < I_Q(X;C).
+\end{equation}
+dropout 越强，目标残差的 caption-contrastive 能量越低，caption-invariant 投影比例越高：$\|\ProjectOp_{\cU_n}\tilde g\|^2 / \|\tilde g\|^2$ 相对增大。
+\end{proposition}
+
+\noindent 于是 caption dropout 的作用沿这条链展开：
+\[
+\text{dropout} \;\Rightarrow\; \text{caption channel degradation} \;\Rightarrow\; \ProjectOp_{\cU_n}\tilde g \text{ 增大}.
+\]
+
+% ============================================================
+\section{架构：Jacobian range 与投影交换子}
+\label{sec:arch_commutator}
+% ============================================================
+
+架构的作用，由\textbf{完整 Jacobian range 与 caption-invariant 子空间的相对位置}刻画：可训练子空间能写入残差的哪一部分。
+
+\subsection{firewall $=$ 投影交换子近似为零}
+
+对可训练子空间 $S$，可达空间 $\cH_S=\Range(\Center_n J_n|_S)\subset T_n$。架构对"无条件/对比"分解的尊重程度由\textbf{投影交换子}度量：
+\begin{equation}\label{eq:commutator}
+[\ProjectOp_{\cH_S},\,\ProjectOp_{\cU_n}] := \ProjectOp_{\cH_S}\ProjectOp_{\cU_n} - \ProjectOp_{\cU_n}\ProjectOp_{\cH_S}.
+\end{equation}
+
+\begin{definition}[数学 firewall]
+$S$ 上存在 firewall 当且仅当
+\begin{equation}\label{eq:firewall_math}
+\boxed{
+\bigl\|[\ProjectOp_{\cH_S},\,\ProjectOp_{\cU_n}]\bigr\|\approx 0
+\;\Longleftrightarrow\;
+\cH_S \approx (\cH_S\cap\cU_n)\oplus(\cH_S\cap\cV_n).
+}
+\end{equation}
+即可训练子空间近似尊重无条件/对比分解，更新不混合两个分量。交换子大则一个更新会同时搅动 unconditional 与 contrastive。
+\end{definition}
+
+\subsection{SDXL / FLUX 的区别是可测命题}
+
+定义两个 operator 量：
+\begin{align}
+L_S(g) &:= \frac{\|\ProjectOp_{\cU_n}\ProjectOp_{\cH_S}g\|_{M_n}^2}{\|\ProjectOp_{\cH_S}g\|_{M_n}^2} \quad\text{（泄漏分数：残差经架构学习后落入 floor 的比例）}, \label{eq:leak_op}\\
+\kappa_S &:= \bigl\|[\ProjectOp_{\cH_S},\,\ProjectOp_{\cU_n}]\bigr\| \quad\text{（交换子范数：架构是否混合两分量）}. \label{eq:commnorm}
+\end{align}
+
+\begin{proposition}[架构序作为可测命题]\label{prop:arch_measurable}
+SDXL 与 FLUX 的区别写成可测命题
+\begin{equation}\label{eq:arch_order}
+L_{\mathrm{FLUX}}(g) > L_{\mathrm{SDXL}}(g),\qquad \kappa_{\mathrm{FLUX}} > \kappa_{\mathrm{SDXL}},
+\end{equation}
+对相关目标残差 $g$ 成立。工程结构（cross-attention 与 joint/single-stream）通过它如何塑造 $\cH_S$，进而决定 $L_S$ 与 $\kappa_S$。
+\end{proposition}
+
+% ============================================================
+\section{可辨识性：caption $\sigma$-代数与识别算子}
+\label{sec:identification}
+% ============================================================
+
+特征能否被文本辨识，由 caption 生成的 $\sigma$-代数 $\sigma(C)$ 与\textbf{识别算子}刻画：它度量某个图像特征方向在不同 caption 下的条件均值变化。
+
+\begin{definition}[caption-feature 识别算子]
+给定图像特征 map $\Phi:\cX\to\R^k$，条件均值算子
+\begin{equation}\label{eq:id_op}
+\cI_Q v := \E_Q[\,v^\top\Phi(X)\mid C\,],\qquad v\in\R^k.
+\end{equation}
+方向 $v$ 是否被文本条件辨识，取决于 $\Var_C\!\bigl(\E[v^\top\Phi(X)\mid C]\bigr)$。
+\end{definition}
+
+\begin{proposition}[常量特征衰退 $=$ 识别算子的近零方向]\label{prop:decay_kernel}
+若 $\Var_C\!\bigl(\E[v^\top\Phi(X)\mid C]\bigr)=0$，即 $v\in\ker\cI_Q$，则该特征方向在训练分布中\textbf{对 $\sigma(C)$ 不可辨识}：数据无法把它与文本条件分开。此时训练目标\textbf{不能唯一决定}它应归入身份、服装、风格、trigger 还是 caption-invariant floor；最终落点由可达投影 $\ProjectOp_{\cH_S}$、预训练增益（$J_n$ 奇异值谱）、岭最小范数偏置共同决定。
+\end{proposition}
+
+\noindent 衰退的根因是\textbf{对 caption $\sigma$-代数不可辨识}：当 $v\in\ker\cI_Q$，特征落点由可达性与最小范数偏置接管，而训练目标本身给不出确定答案。
+
+% ============================================================
+\section{衰退矩阵 $=$ 三算子的组合}
+\label{sec:decay_operators}
+% ============================================================
+
+衰退矩阵由三个算子组合而成：识别、可达、泄漏。
+
+\begin{definition}[三算子]
+\begin{enumerate}[label=(\roman*),nosep]
+\item \textbf{识别算子} $\cI_Q$：训练数据有没有把该特征与文本条件分开？$\cI_Q v\approx 0\Rightarrow$ 不可辨识。
+\item \textbf{可达算子} $\ProjectOp_{\cH_S}$：当前 LoRA / full-finetune / target modules 能否写这个残差？$\|\ProjectOp_{\cH_S}g_v\|\approx 0\Rightarrow$ 数据可辨识也学不动。
+\item \textbf{泄漏投影} $\ProjectOp_{\cU_n}$：学到的更新有多少变成 caption-invariant floor？
+\end{enumerate}
+\end{definition}
+
+\begin{theorem}[衰退严重度的算子分解]\label{thm:decay_decomp}
+对特征方向 $v$（残差 $g_v$），定义经架构学习后的泄漏
+\begin{equation}\label{eq:leak_v}
+\mathrm{Leak}_S(g_v) = \frac{\|\ProjectOp_{\cU_n}\ProjectOp_{\cH_S}g_v\|^2}{\|\ProjectOp_{\cH_S}g_v\|^2}.
+\end{equation}
+则衰退严重度分解为三个独立通道
+\begin{equation}\label{eq:decay_master}
+\boxed{
+\text{衰退严重度} \;\sim\; \underbrace{\text{不可辨识}}_{v\in\ker\cI_Q} \;+\; \underbrace{\text{不可达}}_{\ProjectOp_{\cH_S}g_v\approx 0} \;+\; \underbrace{\text{泄漏到 floor}}_{\mathrm{Leak}_S(g_v)}
+}
+\end{equation}
+\end{theorem}
+
+\begin{corollary}[标签策略 $\times$ 数据丰富度作为 $Q$ 的形态]\label{cor:matrix_demote}
+衰退矩阵的每一格是数据分布 $Q$ 的一种形态在三算子下的取值：
+\begin{itemize}[nosep]
+\item \textbf{无触发词 / 通用标签}：caption 与对象互信息低 $\Rightarrow$ 对象方向 $v\in\ker\cI_Q$（不可辨识）$+$ 高 $\mathrm{Leak}_S$（进 floor）。
+\item \textbf{只有触发词、同装束}：装束方向 $\cI_Q$-近零（与 trigger corr$=1$，对 $\sigma(C)$ 不可分）$\Rightarrow$ 焊入 trigger fiber 或 floor。
+\item \textbf{触发词 $+$ 描述}：描述 token 是 $J_n$ 高增益方向（小所需残差）$\Rightarrow$ 部分把装束从 $\ker\cI_Q$ 移出（软杠杆，概率性）。
+\item \textbf{多装束（数据方差）}：$\Var_C(\E[\phi\mid C])>0\Rightarrow v\notin\ker\cI_Q$（可辨识，硬锁）；但仍需 $\ProjectOp_{\cH_S}$ 覆盖（可达）才学得动——\textbf{可辨识与可达独立}。
+\item \textbf{SDXL vs FLUX}：同一 $Q$ 下，$\mathrm{Leak}_{\mathrm{FLUX}}>\mathrm{Leak}_{\mathrm{SDXL}}$（Prop.~\ref{prop:arch_measurable}）$\Rightarrow$ 更多对象特征以 prompt-不可约的 floor 形式被记住。
+\end{itemize}
+\end{corollary}
+
+% ============================================================
+\section{两阶段对齐税与交叉项}
+\label{sec:two_stage_cross}
+% ============================================================
+
+不强行 $\text{Tax}_2=\text{Tax}_2^{\uu}+\text{Tax}_2^{\cc}$——那只在投影、度量、可达空间都块对角时成立。先保留交叉项。
+
+\begin{theorem}[两阶段税的交叉项分解]\label{thm:tax_cross}
+\begin{equation}\label{eq:tax_full}
+\text{Tax}_2(g) = \|(I-\ProjectOp_{\cH_2})g\|_{M_1}^2 + \lambda\|\delta\theta^*\|^2.
+\end{equation}
+令 $g=g^{\uu}+g^{\cc}$，$g^{\uu}=\ProjectOp_{\cU_1}g$，$g^{\cc}=(I-\ProjectOp_{\cU_1})g$，展开
+\begin{equation}\label{eq:tax_expand}
+\boxed{
+\text{Tax}_2(g) = \text{Tax}_2^{\uu} + \text{Tax}_2^{\cc} + 2\,\mathrm{Cross}_2(g^{\uu},g^{\cc})
+}
+\end{equation}
+其中交叉项 $\mathrm{Cross}_2$ 由交换子 $[\ProjectOp_{\cH_2},\ProjectOp_{\cU_1}]$ 控制。仅当 $\|[\ProjectOp_{\cH_2},\ProjectOp_{\cU_1}]\|\approx 0$（firewall）时才可近似块对角化 $\text{Tax}_2\approx\text{Tax}_2^{\uu}+\text{Tax}_2^{\cc}$。
+\end{theorem}
+
+\begin{corollary}[社区风格泄漏 $=$ floor 在 $\cU_1$ 中不可达]\label{cor:style_floor}
+社区全量微调把 $\ProjectOp_{\cU_1}A_1$（caption-invariant floor，anime 风格）深度写入。用户 LoRA 残差在 $\cU_1$ 方向上：（i）秩饥饿——$\cU_1$ 高维分布式，秩-$r$ LoRA 至多覆盖 $r$ 维，$\|\ProjectOp_{S_2}\ProjectOp_{\cU_1}\|$ 容量受限；（ii）移动代价——景观曲率大。floor 对\textbf{所有} $c$（含 $\nul$）同在，且由 Prop.~\ref{prop:decay_kernel} 的响应算子，$\cR_2$ 对它近零 $\Rightarrow$ prompt-不可约。这是\textbf{势能 floor 层面}的陈述。
+\end{corollary}
+
+% ============================================================
+\section{条件扩散 / Flow Matching：文本作为静态变量}
+\label{sec:cond_fm}
+% ============================================================
+
+扩散/FM 下不需单独处理文本。令路径 $(C,X_{0:1})$，$C$ 静态、$X_t$ 图像路径，条件 path measure $P_n^{\mathrm{path},\rho}(dc,dX_{0:1})=\rho(dc)P_n^{\mathrm{path}}(dX_{0:1}\mid c)$，路径势能
+\begin{equation}\label{eq:path_potential}
+\cA_n(c,X_{0:1}) = \log\frac{dP_n^{\mathrm{path}}(\cdot\mid c)}{dP_0^{\mathrm{path}}(\cdot\mid c)}(X_{0:1}),\qquad B_{n,t}(c,x_t)=\log\frac{p_{n,t}(x_t\mid c)}{p_{0,t}(x_t\mid c)}.
+\end{equation}
+
+\begin{theorem}[条件版 posterior cumulant 递推]\label{thm:cond_cumulant}
+若路径上更新 $\Delta A(c,z)$，则平滑边缘势能更新为后验 log-MGF（条件于 $C=c, X_t=x_t$）：
+\begin{equation}\label{eq:cond_mgf}
+\boxed{
+B_{n+1,t}(c,x_t) - B_{n,t}(c,x_t) = \log \E_{P_n}\!\bigl[e^{\Delta A(C,Z)}\,\big|\,C=c,\,X_t=x_t\bigr] - \psi(c)
+}
+\end{equation}
+完全继承第一部分的 cumulant 展开，\textbf{无需}引入"CFG score covariance"这类工程解释。caption-invariant/contrastive 分解亦在 $L^2(C,X_t)$ 上做投影 $\ProjectOp_{\cU_{n,t}}$、$I-\ProjectOp_{\cU_{n,t}}$。
+\end{theorem}
+
+% ============================================================
+\section{统一主定理}
+\label{sec:main_theorem}
+% ============================================================
+
+\begin{theorem}[Conditional projected residual dynamics]\label{thm:main}
+给定 caption 环境 $\rho$、条件模型族 $p_\theta(x\mid c)$、当前模型 $P_n^\rho$、目标 $Q^*_{n+1}$，令条件残差
+\[
+g_{n+1} = \Center_n\!\left[\log\frac{dQ^*_{n+1}}{dP_n}\right]\in T_n,
+\]
+可训练子空间诱导可达空间 $\cH_{n+1}=\Range(\Center_n J_n|_{S_{n+1}})\subset T_n$。则局部二阶近似下有效更新
+\[
+h^*_{n+1}=\ProjectOp^{M_n,\lambda}_{\cH_{n+1}}g_{n+1},\qquad \frac{dP_{n+1}(\cdot\mid c)}{dP_n(\cdot\mid c)}\propto\exp(\eta\,h^*_{n+1}(c,\cdot)).
+\]
+进一步：
+\begin{itemize}[nosep]
+\item \textbf{caption-invariant 泄漏} 由 $\displaystyle\mathrm{Leak}_{n+1}(g)=\frac{\|\ProjectOp_{\cU_n}h^*_{n+1}\|^2_{M_n}}{\|h^*_{n+1}\|^2_{M_n}}$ 给出，$\cU_n=\overline{\{a(X)-\E_{P_n}[a(X)\mid C]\}}$；
+\item \textbf{prompt 可控性} 由响应算子 $\cR_n$ 给出；
+\item \textbf{数据可辨识性} 由识别算子 $\cI_Q$ 给出；
+\item \textbf{架构影响} 由 $\cH_{n+1}$ 与 $\ProjectOp_{\cU_n}$ 的相对位置（交换子 $\kappa$、泄漏 $L$）给出。
+\end{itemize}
+\end{theorem}
+
+\subsection{对象词典}
+
+框架中的每个对象及其刻画的内容：
+
+\begin{table}[htbp]
+\centering
+\caption{框架的对象及其含义}
+\label{tab:dictionary}
+\small
+\begin{tabular}{@{}p{5cm}p{8.6cm}@{}}
+\toprule
+\textbf{对象} & \textbf{含义} \\
+\midrule
+$A_n(c,x)$ & 条件累计势能，相对基座的 log-density 偏移 \\
+$T_n$ & 条件切空间（每个 fiber 上零均值） \\
+$g_{n+1}=\Center_n[\,\cdot\,]$ & 条件中心化残差 \\
+$\ProjectOp_{\cU_n}A_n$ & caption-invariant 分量（对所有 caption 共同的图像侧 floor） \\
+$A(x\mid\nul)$ & null-caption fiber potential（$\nul$ fiber 上的求值） \\
+$\cR_n$ & 干预响应算子，刻画 prompt 可控性 \\
+$\cK(d\tilde c\mid c)$ & caption dropout 通道，降低 $I(X;\tilde C)$ \\
+$\sigma(C)$ & caption 生成的 $\sigma$-代数 \\
+$\ker\cI_Q$ & 识别算子的近零方向（对 $\sigma(C)$ 不可辨识） \\
+$\cH_S=\Range(\Center_n J_n|_S)$ & 可达子空间，由架构与训练参数决定 \\
+$\|[\ProjectOp_{\cH_S},\ProjectOp_{\cU_n}]\|$ & firewall 强度（交换子范数 $\kappa_S$） \\
+$L_S(g)$ & 泄漏分数，残差落入 floor 的比例 \\
+$\mathrm{Cross}_2$ & 两阶段税的交叉项，由交换子控制 \\
+$\cI_Q,\ \ProjectOp_{\cH_S},\ \ProjectOp_{\cU_n}$ & 衰退矩阵的三个组合算子 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{框架的逻辑链}
+
+整条逻辑链是
+\[
+\boxed{
+(C,X)\text{ 联合测度} \to T_n\text{ 切空间} \to g\text{ 中心化残差} \to \ProjectOp_{\cH}g\text{ 可达更新} \to \ProjectOp_{\cU}\ProjectOp_{\cH}g\text{ floor 泄漏} \to \cR,\cI\text{ 判可控/可辨识}
+}
+\]
+工程细节只通过三个对象进入：训练数据分布 $Q$、可训练子空间 $S$、完整 Jacobian $J_n$。
+
+\bigskip
+\noindent\fbox{\parbox{0.96\textwidth}{%
+\textbf{全局一句话}：加入文本条件后，T2I 后微调是\textbf{联合条件测度上的残差投影动力学}。把文本作为测度空间的一部分，在条件切空间 $T_n$ 上做中心化残差 $g$、可达投影 $\ProjectOp_{\cH}g$、caption-invariant 泄漏 $\ProjectOp_{\cU}\ProjectOp_{\cH}g$；prompt 可控性由响应算子 $\cR_n$ 给出、数据可辨识性由识别算子 $\cI_Q$ 给出、架构影响由 $\cH$ 与 $\cU$ 的交换子给出。衰退矩阵、对齐税、firewall、SDXL/FLUX 排序都是这三个算子在不同 $Q,S,J_n$ 下的取值。
+}}
+
+\end{document}

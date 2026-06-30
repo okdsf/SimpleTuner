@@ -1,4 +1,6 @@
 @startuml Flux_Double_Single_Stream
+!pragma svgsize 8192
+skinparam dpi 150
 !theme plain
 skinparam backgroundColor #FEFEFE
 skinparam defaultFontName "Microsoft YaHei"
@@ -8,6 +10,8 @@ skinparam RoundCorner 8
 skinparam PackageBorderThickness 2
 skinparam NoteBackgroundColor #FFFFDD
 skinparam NoteBorderColor #999999
+skinparam MaxMessageSize 500
+skinparam wrapWidth 400
 
 title **Flux Transformer 核心: Double Stream → Single Stream**\n以 Flux 1 代码为主线展开, Flux 2 差异全标注\nFlux 1: flux/transformer.py | Flux 2: flux2/transformer.py
 

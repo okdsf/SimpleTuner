@@ -1,4 +1,6 @@
 @startuml SDXL_Bucket_Splitting
+!pragma svgsize 8192
+skinparam dpi 150
 !theme plain
 skinparam backgroundColor #FEFEFE
 skinparam defaultFontName "Microsoft YaHei"
@@ -8,6 +10,8 @@ skinparam RoundCorner 8
 skinparam PackageBorderThickness 2
 skinparam NoteBackgroundColor #FFFFDD
 skinparam NoteBorderColor #999999
+skinparam MaxMessageSize 500
+skinparam wrapWidth 400
 
 title **SimpleTuner SDXL 分桶逻辑详解**\n为什么分桶? 怎么分? 多卡怎么切?
 
